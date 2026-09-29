@@ -3,9 +3,11 @@
 //!
 //! [`build_index`] builds the `handle → record` index the pipeline consults
 //! once; [`collect_events`] resolves every `<event>` record to a
-//! [`ResolvedEvent`], linking each event to the people or couples that
-//! reference it. Subject resolution follows the plan's precedence order
-//! (§8.6):
+//! [`ResolvedEvent`] — linking each event to the people or couples that
+//! reference it, stamping its derived values (elapsed years, anniversary
+//! anchor, leap-day fold, age at event — [`crate::pipeline::derive`]) and
+//! applying the `ReportOptions` filters ([`crate::pipeline::passes`]).
+//! Subject resolution follows the plan's precedence order (§8.6):
 //!
 //! | Step | Subjects | Where the link comes from |
 //! | --- | --- | --- |
@@ -30,6 +32,8 @@ use std::collections::{HashMap, HashSet};
 use gramps_xml::model::{Database, Event, EventRef, Family, Person, PersonName, Place, Surname};
 
 use crate::model::{PersonDisplay, ResolvedEvent};
+use crate::options::ReportOptions;
+use crate::pipeline::{derive, passes};
 
 /// The role Gramps writes for a person's principal eventref
 /// (`<eventref role="Primary"/>`).
@@ -93,17 +97,25 @@ pub fn build_index(db: &Database) -> HandleIndex {
     index
 }
 
-/// Resolve every event in `db` to a [`ResolvedEvent`], in document order.
+/// Resolve every event in `db` to a [`ResolvedEvent`], in document order,
+/// stamped with its derived values and filtered by `opts`.
 ///
-/// No event is dropped here — privacy and orphan filtering are the
-/// milestone-7 `ReportOptions` pipeline's job (plan §8.7, D7); resolution
-/// only flags them on [`ResolvedEvent::private`] / [`ResolvedEvent::orphan`].
-pub fn collect_events(db: &Database) -> Vec<ResolvedEvent> {
+/// Resolution never drops an event; the `ReportOptions` pipeline is where
+/// events leave the stream — privacy (§8.7), orphan visibility (D7), the
+/// rule-14 type selection, the person filter, the date range and
+/// living-only (§8 rule 15). Default `opts` therefore return every resolved
+/// event except private ones.
+pub fn collect_events(db: &Database, opts: &ReportOptions) -> Vec<ResolvedEvent> {
     let index = build_index(db);
-    db.events
-        .iter()
-        .map(|event| resolve_event(event, db, &index))
-        .collect::<Vec<_>>()
+    let mut out = Vec::new();
+    for event in &db.events {
+        let mut resolved = resolve_event(event, db, &index);
+        derive(&mut resolved, &index, opts);
+        if passes(&resolved, &index, opts) {
+            out.push(resolved);
+        }
+    }
+    out
 }
 
 /// The outcome of one event's subject resolution.
@@ -113,7 +125,9 @@ struct Resolution {
     orphan: bool,
 }
 
-/// Resolve one event to its subjects, place path and derived fields.
+/// Resolve one event to its subjects, place path and flags — the derived
+/// fields are placeholder values here and are overwritten by
+/// [`crate::pipeline::derive`] in [`collect_events`].
 fn resolve_event(event: &Event, db: &Database, index: &HandleIndex) -> ResolvedEvent {
     let resolution = resolve_subjects(event, db, index);
     let date = event.date.as_ref();
@@ -126,6 +140,10 @@ fn resolve_event(event: &Event, db: &Database, index: &HandleIndex) -> ResolvedE
         place_path: place_path(event, index),
         private: event.private,
         orphan: resolution.orphan,
+        elapsed_years: None,
+        anniversary: None,
+        leap_day_folded: false,
+        age_at_event: None,
     }
 }
 
@@ -547,7 +565,7 @@ mod tests {
     #[test]
     fn data_fixture_resolves_every_event_to_its_primary_person() {
         let db = parse_database(DATA_GRAMPS).unwrap();
-        let events = collect_events(&db);
+        let events = collect_events(&db, &ReportOptions::with_reference_year(2026));
         assert_eq!(events.len(), 6);
 
         let harry = &events[0];
@@ -583,7 +601,7 @@ mod tests {
     #[test]
     fn family_fixture_applies_role_precedence_and_couples() {
         let db = parse_database(FAMILIES_GRAMPS).unwrap();
-        let events = collect_events(&db);
+        let events = collect_events(&db, &ReportOptions::with_reference_year(2026));
         assert_eq!(events.len(), 8);
 
         // (c) family-owned events resolve to the couple — divorce does not
@@ -635,7 +653,7 @@ mod tests {
     #[test]
     fn crafted_fixture_covers_dedup_prefixes_single_spouse_and_places() {
         let db = parse_database(RESOLUTION_XML).unwrap();
-        let events = collect_events(&db);
+        let events = collect_events(&db, &ReportOptions::with_reference_year(2026));
         assert_eq!(events.len(), 5);
 
         // One person holding Primary + Witness refs to the same event

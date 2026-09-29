@@ -3,12 +3,9 @@
 //! [`PersonDisplay`] is a person as the subject of one event — the
 //! displayable name plus their per-event role. [`ResolvedEvent`] is an
 //! event linked to its subjects and place path by
-//! [`crate::resolve::collect_events`].
-//!
-//! Derived values (elapsed years, age at event, anniversary keys, leap-day
-//! folding) and the `ReportOptions` filtering pipeline are the milestone-7
-//! unit; they are deliberately absent here so this module stays the
-//! resolution contract alone.
+//! [`crate::resolve::collect_events`], and stamped with its derived values
+//! (elapsed years, anniversary anchor, leap-day fold, age at event) by the
+//! milestone-7 `ReportOptions` pipeline ([`crate::pipeline`]).
 
 use gramps_dates::GrampsDate;
 use jiff::civil::Date;
@@ -37,8 +34,9 @@ pub struct PersonDisplay {
 ///
 /// An event referenced by several people carries one [`PersonDisplay`] per
 /// person; the views expand that into one row per (event, subject) later
-/// (plan §8.6 dedup rule).
-#[derive(Clone, PartialEq, Eq)]
+/// (plan §8.6 dedup rule). The derived fields are stamped by
+/// [`crate::pipeline::derive`] after resolution, before filtering.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedEvent {
     /// The `<type>` element verbatim — `"Birth"`, `"Marriage"`, or a
     /// user-defined type; never empty in practice.
@@ -63,10 +61,30 @@ pub struct ResolvedEvent {
     /// handle or the handle does not resolve.
     pub place_path: Option<Vec<String>>,
     /// `priv="1"` on the event record — excluded from default output
-    /// (plan §8.7); the include-private filter lands in milestone 7.
+    /// (plan §8.7) unless [`crate::options::ReportOptions::include_private`].
     pub private: bool,
     /// True when no person or family references the event (plan §8.6e, D7):
     /// the subject is the `"—"` placeholder and `subjects` has exactly one
     /// entry.
     pub orphan: bool,
+    /// `reference_year − event_year` (plan §8.4), measured from the start
+    /// year of the date (ranges/spans from their start, §8.2). `None` when
+    /// the year is unknown (undated events, text dates, year 0). The value
+    /// stays raw — negative elapsed values render `"—"` in the views.
+    pub elapsed_years: Option<i32>,
+    /// The anniversary anchor `(month, day)` from the date's start (plan §8
+    /// rules 1/3): full dates anchor on their month/day, month-only dates
+    /// and month-bearing range starts on `(month, 1)`, year-only dates have
+    /// no anchor. This is the *true* anchor — Feb 29 stays `(2, 29)`;
+    /// [`ResolvedEvent::leap_day_folded`] records whether the D6 fold
+    /// applied in this run.
+    pub anniversary: Option<(u32, u32)>,
+    /// True when decision D6 applies in this run: the anchor is Feb 29, the
+    /// leap-day policy folds, and the reference year is not a leap year.
+    pub leap_day_folded: bool,
+    /// The primary (first) subject's age in years/months when the event
+    /// happened, computed from their birth event (plan §8.9): full dates
+    /// give years/months, partial dates a years-only best effort, `None`
+    /// for orphans, unknown birth years and events predating the birth.
+    pub age_at_event: Option<(i32, u32)>,
 }
