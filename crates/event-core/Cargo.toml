@@ -3,3 +3,10 @@ name = "event-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+gramps-dates = { path = "../gramps-dates" }
+gramps-xml = { path = "../gramps-xml" }
+# Civil-date type for the resolved, Gregorian-normalized dates; pinned at
+# milestone 4 (gramps-dates), shared workspace-wide.
+jiff = { workspace = true }

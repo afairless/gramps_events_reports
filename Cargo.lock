@@ -116,6 +116,11 @@ dependencies = [
 [[package]]
 name = "event-core"
 version = "0.1.0"
+dependencies = [
+ "gramps-dates",
+ "gramps-xml",
+ "jiff",
+]
 
 [[package]]
 name = "fastrand"
