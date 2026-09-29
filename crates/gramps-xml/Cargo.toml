@@ -3,3 +3,10 @@ name = "gramps-xml"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+gramps-dates = { path = "../gramps-dates" }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+roxmltree = { workspace = true }
+zip = { workspace = true }

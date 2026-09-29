@@ -25,6 +25,12 @@ resolver = "3"
 thiserror = "2"
 # Civil-date math: pinned at milestone 4 (gramps-dates).
 jiff = "0.2"
+# .gramps containers + XML parsing: pinned at milestone 1/4 (gramps-xml).
+flate2 = "1.1"
+roxmltree = "0.21"
+# Only deflate decompression is needed to read Gramps "saved tree" zips;
+# the default feature set pulls in bzip2/lzma/zstd backends we never use.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [workspace.package]
 version = "0.1.0"
