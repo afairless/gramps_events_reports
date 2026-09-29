@@ -19,6 +19,11 @@ members = [
 ]
 resolver = "3"
 
+# Shared dependency versions are pinned here in [workspace.dependencies]
+# as milestones introduce them.
+[workspace.dependencies]
+thiserror = "2"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
