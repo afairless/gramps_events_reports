@@ -4,8 +4,17 @@
 //! sections, every primary record carrying a unique `handle` (an XML `ID`,
 //! hence unique per document). This module walks the document with
 //! `roxmltree` and mirrors the sections the v1 pipeline consumes — header,
-//! events, people, families, places — skipping everything else (objects,
-//! notes, sources, `future-*` sections ...) for forward compatibility.
+//! tags, events, people, families, places — skipping everything else
+//! (objects, notes, sources, `future-*` sections ...) for forward
+//! compatibility.
+//!
+//! Full-record scope (plan §12 step 5): `header` (`created` + `researcher`)
+//! and the `tags` section; events carry `cause`/`description`/`priv`;
+//! people carry gender, multiple names (surname prefix/`prim`), `eventref`
+//! roles and `childof`/`parentin` links; families carry `rel`, spouses,
+//! children and `eventref`s; places carry the `placeref` parent chain — all
+//! with privacy flags. Unknown elements and attributes are tolerated
+//! everywhere (forward compatibility).
 //!
 //! **Parse-boundary rules** (plan §7.1):
 //!
@@ -32,7 +41,9 @@ use roxmltree::Node;
 
 use crate::decode_container;
 use crate::error::GrampsXmlError;
-use crate::model::{Database, Event, Family, Header, Person, Place};
+use crate::model::{
+    Database, Event, EventRef, Family, Gender, Header, Person, PersonName, Place, Surname, Tag,
+};
 
 /// Parse a `.gramps` file: detect the container, decode it, and map the
 /// XML document onto a typed [`Database`].
@@ -80,6 +91,7 @@ pub(crate) fn parse_document(xml: &str) -> Result<Database, GrampsXmlError> {
     }
 
     let mut header = Header::default();
+    let mut tags = Vec::new();
     let mut events = Vec::new();
     let mut people = Vec::new();
     let mut families = Vec::new();
@@ -90,18 +102,20 @@ pub(crate) fn parse_document(xml: &str) -> Result<Database, GrampsXmlError> {
     for section in element_children(root) {
         match section.tag_name().name() {
             "header" => parse_header(section, &mut header),
+            "tags" => parse_tags(section, &mut index, &mut warnings, &mut tags)?,
             "events" => parse_events(section, &mut index, &mut warnings, &mut events)?,
-            "people" => parse_people(section, &mut index, &mut people)?,
-            "families" => parse_families(section, &mut index, &mut families)?,
-            "places" => parse_places(section, &mut index, &mut places)?,
+            "people" => parse_people(section, &mut index, &mut warnings, &mut people)?,
+            "families" => parse_families(section, &mut index, &mut warnings, &mut families)?,
+            "places" => parse_places(section, &mut index, &mut warnings, &mut places)?,
             // Unknown or not-yet-modeled sections (objects, notes, sources,
-            // citations, tags, bookmarks, `future-*`...) are tolerated.
+            // citations, bookmarks, `future-*`...) are tolerated.
             _ => {}
         }
     }
 
     Ok(Database {
         header,
+        tags,
         events,
         people,
         families,
@@ -148,16 +162,84 @@ impl HandleIndex {
     }
 }
 
-/// Parse the `<header>` section: the `created` stamp only; `researcher` and
-/// friends land in the full-record milestone.
+/// Parse the `<header>` section: the `<created>` stamp and the
+/// `<researcher>` name; unknown header children (`mediapath`, `...`) are
+/// tolerated.
 fn parse_header(node: Node, header: &mut Header) {
     for child in element_children(node) {
-        if child.tag_name().name() == "created" {
-            header.created_date = child.attribute("date").map(str::to_string);
-            header.version = child.attribute("version").map(str::to_string);
-            return;
+        match child.tag_name().name() {
+            "created" => {
+                header.created_date = child.attribute("date").map(str::to_string);
+                header.version = child.attribute("version").map(str::to_string);
+            }
+            "researcher" => {
+                if let Some(resname) = element_children(child)
+                    .find(|c| c.tag_name().name() == "resname")
+                    .and_then(|c| c.text())
+                {
+                    header.researcher_name = Some(resname.trim().to_string());
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// Parse the `<tags>` section. `tag` records are primary records: they must
+/// carry a unique handle, and their numeric `priority`/`change` attributes
+/// are validated; a malformed numeric attribute warns and skips the tag so
+/// the rest of the section stays readable.
+fn parse_tags(
+    node: Node,
+    index: &mut HandleIndex,
+    warnings: &mut Vec<String>,
+    out: &mut Vec<Tag>,
+) -> Result<(), GrampsXmlError> {
+    for (position, record) in element_children(node)
+        .filter(|c| c.tag_name().name() == "tag")
+        .enumerate()
+    {
+        let handle = required_handle(record, "tag", position)?;
+        index.insert(handle, "tag", position)?;
+        // A malformed tail attribute already claimed the handle and appended
+        // a warning; the record itself is skipped.
+        if let Some(tag) = parse_tag(record, warnings) {
+            out.push(tag);
+        }
+    }
+    Ok(())
+}
+
+/// Parse one `<tag>` record's soft fields. Returns `None` (after appending
+/// a warning) when a numeric attribute fails to parse.
+fn parse_tag(node: Node, warnings: &mut Vec<String>) -> Option<Tag> {
+    let handle = node.attribute("handle").unwrap_or("").to_string();
+    let priority = match node
+        .attribute("priority")
+        .and_then(|v| v.parse::<i32>().ok())
+    {
+        Some(value) => value,
+        None => {
+            warnings.push(format!(
+                "skipping tag {handle}: malformed priority attribute"
+            ));
+            return None;
+        }
+    };
+    let change = match node.attribute("change").and_then(|v| v.parse::<i64>().ok()) {
+        Some(value) => value,
+        None => {
+            warnings.push(format!("skipping tag {handle}: malformed change attribute"));
+            return None;
+        }
+    };
+    Some(Tag {
+        handle,
+        name: node.attribute("name").unwrap_or("").to_string(),
+        color: node.attribute("color").unwrap_or("").to_string(),
+        priority,
+        change,
+    })
 }
 
 fn parse_events(
@@ -176,21 +258,149 @@ fn parse_events(
     Ok(())
 }
 
+/// Parse a `<person>` record — full record: gender, names, eventref roles,
+/// `childof`/`parentin` family links and the privacy flag (plan §12 step 5).
+///
+/// Returns `Ok(None)` when the record is skipped after a recoverable
+/// malformed field (typically a `gender` that is not `M`/`F`/`U`), with the
+/// warning appended; handle violations stay hard errors.
+fn parse_person(
+    node: Node,
+    index: &mut HandleIndex,
+    warnings: &mut Vec<String>,
+    position: usize,
+) -> Result<Option<Person>, GrampsXmlError> {
+    let handle = required_handle(node, "person", position)?;
+    let id = node.attribute("id").unwrap_or(handle).to_string();
+
+    let mut gender = None;
+    let mut names = Vec::new();
+    let mut event_refs = Vec::new();
+    let mut child_of = Vec::new();
+    let mut parent_in = Vec::new();
+
+    for child in element_children(node) {
+        match child.tag_name().name() {
+            "gender" => {
+                let raw = child.text().unwrap_or("").trim();
+                gender = Some(match raw {
+                    "M" => Gender::Male,
+                    "F" => Gender::Female,
+                    "U" => Gender::Unknown,
+                    other => {
+                        warnings.push(format!("skipping person {id}: malformed gender {other:?}"));
+                        return Ok(None);
+                    }
+                });
+            }
+            "name" => names.push(parse_name(child)),
+            "eventref" => {
+                if let Some(ev) = parse_event_ref(child, &format!("person {id}"), warnings) {
+                    event_refs.push(ev);
+                }
+            }
+            "childof" => {
+                if let Some(h) = parse_hlink(child, &format!("person {id}"), "childof", warnings) {
+                    child_of.push(h);
+                }
+            }
+            "parentin" => {
+                if let Some(h) = parse_hlink(child, &format!("person {id}"), "parentin", warnings) {
+                    parent_in.push(h);
+                }
+            }
+            // Unknown per-record elements (objref, address, attribute, url,
+            // lds_ord, personref, noteref, citationref, tagref, ...) are
+            // tolerated.
+            _ => {}
+        }
+    }
+
+    index.insert(handle, "person", position)?;
+    Ok(Some(Person {
+        handle: handle.to_string(),
+        gramps_id: node.attribute("id").map(str::to_string),
+        // The DTD makes `gender` required; a well-formed-but-minimal record
+        // without one degrades to Unknown instead of being skipped.
+        gender: gender.unwrap_or(Gender::Unknown),
+        names,
+        event_refs,
+        child_of,
+        parent_in,
+        private: node.attribute("priv") == Some("1"),
+    }))
+}
+
+/// Parse one `<name>` element into a [`PersonName`]. Names carry only soft
+/// fields, so parsing never fails — unknown children (`call`, `title`,
+/// `nick`, notes, ...) are tolerated.
+fn parse_name(node: Node) -> PersonName {
+    let mut name = PersonName {
+        name_type: node.attribute("type").unwrap_or("").to_string(),
+        alt: node.attribute("alt") == Some("1"),
+        first: None,
+        surnames: Vec::new(),
+        suffix: None,
+    };
+    for child in element_children(node) {
+        match child.tag_name().name() {
+            "first" => name.first = child.text().map(str::trim).map(str::to_string),
+            "surname" => name.surnames.push(Surname {
+                value: child.text().unwrap_or("").trim().to_string(),
+                prefix: child.attribute("prefix").map(str::to_string),
+                prim: child.attribute("prim") == Some("1"),
+            }),
+            "suffix" => name.suffix = child.text().map(str::trim).map(str::to_string),
+            _ => {}
+        }
+    }
+    name
+}
+
+/// Parse one `<eventref>` link (on a person or a family). A missing `hlink`
+/// is a recoverable defect: the link is dropped with a warning and the
+/// owning record is kept.
+fn parse_event_ref(node: Node, owner: &str, warnings: &mut Vec<String>) -> Option<EventRef> {
+    match node.attribute("hlink") {
+        Some(hlink) => Some(EventRef {
+            event_handle: hlink.to_string(),
+            role: node.attribute("role").unwrap_or("").to_string(),
+        }),
+        None => {
+            warnings.push(format!("skipping eventref on {owner}: missing hlink"));
+            None
+        }
+    }
+}
+
+/// Read a bare `hlink` reference element (`childof`, `parentin`, ...),
+/// warning and dropping the link (but keeping the record) when the
+/// reference is absent.
+fn parse_hlink(node: Node, owner: &str, kind: &str, warnings: &mut Vec<String>) -> Option<String> {
+    match node.attribute("hlink") {
+        Some(hlink) => Some(hlink.to_string()),
+        None => {
+            warnings.push(format!("skipping {kind} on {owner}: missing hlink"));
+            None
+        }
+    }
+}
+
 fn parse_people(
     node: Node,
     index: &mut HandleIndex,
+    warnings: &mut Vec<String>,
     out: &mut Vec<Person>,
 ) -> Result<(), GrampsXmlError> {
     for (position, record) in element_children(node)
         .filter(|c| c.tag_name().name() == "person")
         .enumerate()
     {
-        let handle = required_handle(record, "person", position)?;
-        index.insert(handle, "person", position)?;
-        out.push(Person {
-            handle: handle.to_string(),
-            gramps_id: record.attribute("id").map(str::to_string),
-        });
+        match parse_person(record, index, warnings, position) {
+            Ok(Some(person)) => out.push(person),
+            Ok(None) => {}
+            Err(err) => return Err(err),
+        }
     }
     Ok(())
 }
@@ -198,6 +408,7 @@ fn parse_people(
 fn parse_families(
     node: Node,
     index: &mut HandleIndex,
+    warnings: &mut Vec<String>,
     out: &mut Vec<Family>,
 ) -> Result<(), GrampsXmlError> {
     for (position, record) in element_children(node)
@@ -206,10 +417,57 @@ fn parse_families(
     {
         let handle = required_handle(record, "family", position)?;
         index.insert(handle, "family", position)?;
-        out.push(Family {
+        let id = record.attribute("id").unwrap_or(handle).to_string();
+
+        let mut family = Family {
             handle: handle.to_string(),
             gramps_id: record.attribute("id").map(str::to_string),
-        });
+            rel: None,
+            father: None,
+            mother: None,
+            children: Vec::new(),
+            event_refs: Vec::new(),
+            private: record.attribute("priv") == Some("1"),
+        };
+        for child in element_children(record) {
+            match child.tag_name().name() {
+                "rel" => family.rel = child.attribute("type").map(str::to_string),
+                "father" => {
+                    family.father = match child.attribute("hlink") {
+                        Some(hlink) => Some(hlink.to_string()),
+                        None => {
+                            warnings.push(format!("skipping father on family {id}: missing hlink"));
+                            None
+                        }
+                    };
+                }
+                "mother" => {
+                    family.mother = match child.attribute("hlink") {
+                        Some(hlink) => Some(hlink.to_string()),
+                        None => {
+                            warnings.push(format!("skipping mother on family {id}: missing hlink"));
+                            None
+                        }
+                    };
+                }
+                "childref" => {
+                    if let Some(h) =
+                        parse_hlink(child, &format!("family {id}"), "childref", warnings)
+                    {
+                        family.children.push(h);
+                    }
+                }
+                "eventref" => {
+                    if let Some(ev) = parse_event_ref(child, &format!("family {id}"), warnings) {
+                        family.event_refs.push(ev);
+                    }
+                }
+                // Unknown per-record elements (lds_ord, objref, attribute,
+                // noteref, citationref, tagref, ...) are tolerated.
+                _ => {}
+            }
+        }
+        out.push(family);
     }
     Ok(())
 }
@@ -217,6 +475,7 @@ fn parse_families(
 fn parse_places(
     node: Node,
     index: &mut HandleIndex,
+    warnings: &mut Vec<String>,
     out: &mut Vec<Place>,
 ) -> Result<(), GrampsXmlError> {
     for (position, record) in element_children(node)
@@ -225,16 +484,40 @@ fn parse_places(
     {
         let handle = required_handle(record, "place", position)?;
         index.insert(handle, "place", position)?;
-        let name = element_children(record)
-            .find(|c| c.tag_name().name() == "pname")
-            .and_then(|c| c.attribute("value"))
-            .unwrap_or("")
-            .to_string();
+
+        let mut name = String::new();
+        let mut parent_handle = None;
+        for child in element_children(record) {
+            match child.tag_name().name() {
+                "pname" if name.is_empty() => {
+                    if let Some(value) = child.attribute("value") {
+                        name = value.to_string();
+                    }
+                }
+                "placeref" if parent_handle.is_none() => {
+                    parent_handle = match child.attribute("hlink") {
+                        Some(hlink) => Some(hlink.to_string()),
+                        None => {
+                            warnings.push(format!(
+                                "skipping placeref on place {handle}: missing hlink"
+                            ));
+                            None
+                        }
+                    };
+                }
+                // Unknown per-record elements (ptitle, code, coord,
+                // location, objref, url, noteref, citationref, tagref, ...)
+                // are tolerated.
+                _ => {}
+            }
+        }
         out.push(Place {
             handle: handle.to_string(),
             gramps_id: record.attribute("id").map(str::to_string),
             name,
             place_type: record.attribute("type").map(str::to_string),
+            parent_handle,
+            private: record.attribute("priv") == Some("1"),
         });
     }
     Ok(())
@@ -261,6 +544,9 @@ fn parse_event(
         event_type: String::new(),
         date: None,
         place_handle: None,
+        cause: None,
+        description: None,
+        private: node.attribute("priv") == Some("1"),
         change: 0,
     };
 
@@ -290,11 +576,20 @@ fn parse_event(
                 }
             }
             "place" => {
-                event.place_handle = child.attribute("hlink").map(str::to_string);
+                event.place_handle = match child.attribute("hlink") {
+                    Some(hlink) => Some(hlink.to_string()),
+                    None => {
+                        warnings.push(format!("skipping place on event {id}: missing hlink"));
+                        None
+                    }
+                };
             }
-            // Unknown per-record elements (noteref, citationref, objref,
-            // tagref, attribute, description, cause, ...) are tolerated;
-            // full-record parsing lands in a later milestone.
+            "cause" => event.cause = child.text().map(str::trim).map(str::to_string),
+            "description" => {
+                event.description = child.text().map(str::trim).map(str::to_string);
+            }
+            // Unknown per-record elements (attribute, note/tag/citation
+            // refs, objref, ...) are tolerated (forward compatibility).
             _ => {}
         }
     }
@@ -710,6 +1005,511 @@ mod tests {
         let date = text.date.as_ref().unwrap();
         assert_eq!(date.modifier, Modifier::TextOnly);
         assert_eq!(date.text(), Some("circa the harvest festival"));
+        assert!(db.warnings.is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // Full-record parsing (plan step 5): names, eventref roles, family
+    // members, place hierarchy, privacy flags, header/tags.
+    // ---------------------------------------------------------------------
+
+    const FULL: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-09-29" version="5.1.6"/>
+    <researcher><resname>Dr. Whiskers &amp; Sons</resname></researcher>
+  </header>
+  <tags>
+    <tag handle="_t0000" name="ToDo" color="#fb9408" priority="0" change="10"/>
+    <tag handle="_t0001" name="Research" color="#2e76b6" priority="1" change="11"/>
+  </tags>
+  <events>
+    <event handle="_e0000" change="100" id="E0000" priv="1">
+      <type>Birth</type>
+      <dateval val="2000-03-03"/>
+      <place hlink="_p0000"/>
+      <cause>custom cause</cause>
+      <description>firstborn</description>
+    </event>
+    <event handle="_e0001" change="101" id="E0001">
+      <type>Marriage</type>
+      <dateval val="1955-06-12"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_pe000" change="200" id="I0000" priv="1">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>Harry</first>
+        <surname prefix="van der" prim="1">Meowser</surname>
+      </name>
+      <name type="Married Name" alt="1">
+        <first>Harry</first>
+        <surname prim="0">Hairball</surname>
+        <surname prim="1">Meowser</surname>
+      </name>
+      <eventref hlink="_e0000" role="Primary"/>
+      <eventref hlink="_e0001" role="Witness"/>
+      <childof hlink="_f0000"/>
+      <parentin hlink="_f0001"/>
+    </person>
+    <person handle="_pe001" change="201" id="I0001">
+      <gender>F</gender>
+      <name type="Birth Name">
+        <first>Sally</first>
+        <surname>Furball</surname>
+      </name>
+      <eventref hlink="_e0001" role="Primary"/>
+    </person>
+  </people>
+  <families>
+    <family handle="_f0000" change="300" id="F0000">
+      <rel type="Marriage"/>
+      <father hlink="_pe000"/>
+      <mother hlink="_pe001"/>
+      <childref hlink="_pe002"/>
+      <eventref hlink="_e0001" role="Family"/>
+    </family>
+    <family handle="_f0001" change="301" id="F0001">
+      <rel type="Unknown"/>
+    </family>
+  </families>
+  <places>
+    <placeobj handle="_p0000" change="400" id="P0000" type="City">
+      <pname value="Uppsala"/>
+      <placeref hlink="_p0001"/>
+    </placeobj>
+    <placeobj handle="_p0001" change="401" id="P0001" type="Country" priv="1">
+      <pname value="Sweden"/>
+    </placeobj>
+  </places>
+</database>"##;
+
+    #[test]
+    fn person_names_parse_multiple_names_with_surname_prefix_and_prim() {
+        let db = parse(FULL).unwrap();
+        let person = &db.people[0];
+        assert_eq!(person.names.len(), 2, "primary + married name");
+        let primary = &person.names[0];
+        assert_eq!(primary.name_type, "Birth Name");
+        assert!(!primary.alt);
+        assert_eq!(primary.first.as_deref(), Some("Harry"));
+        assert_eq!(primary.surnames.len(), 1);
+        assert_eq!(primary.surnames[0].value, "Meowser");
+        assert_eq!(primary.surnames[0].prefix.as_deref(), Some("van der"));
+        assert!(primary.surnames[0].prim);
+        assert_eq!(primary.suffix, None);
+        let married = &person.names[1];
+        assert_eq!(married.name_type, "Married Name");
+        assert!(married.alt);
+        assert_eq!(married.surnames.len(), 2);
+        assert!(!married.surnames[0].prim);
+        assert!(married.surnames[1].prim);
+    }
+
+    #[test]
+    fn person_without_names_stays_empty() {
+        let db = parse(
+            r#"<database><people>
+            <person handle="_p0" id="I0000"><gender>U</gender></person>
+            </people></database>"#,
+        )
+        .unwrap();
+        assert!(db.people[0].names.is_empty());
+        assert!(db.warnings.is_empty());
+    }
+
+    #[test]
+    fn eventref_roles_parse_on_people_and_families() {
+        let db = parse(FULL).unwrap();
+        let person = &db.people[0];
+        assert_eq!(person.event_refs.len(), 2);
+        assert_eq!(person.event_refs[0].event_handle, "_e0000");
+        assert_eq!(person.event_refs[0].role, "Primary");
+        assert_eq!(person.event_refs[1].role, "Witness");
+        // second person: single Primary link
+        assert_eq!(db.people[1].event_refs.len(), 1);
+        assert_eq!(db.people[1].event_refs[0].role, "Primary");
+        // marriage event hangs off the family, role "Family"
+        let family = &db.families[0];
+        assert_eq!(family.event_refs.len(), 1);
+        assert_eq!(family.event_refs[0].event_handle, "_e0001");
+        assert_eq!(family.event_refs[0].role, "Family");
+    }
+
+    #[test]
+    fn family_members_and_children_parse() {
+        let db = parse(FULL).unwrap();
+        let family = &db.families[0];
+        assert_eq!(family.rel.as_deref(), Some("Marriage"));
+        assert_eq!(family.father.as_deref(), Some("_pe000"));
+        assert_eq!(family.mother.as_deref(), Some("_pe001"));
+        assert_eq!(family.children, vec!["_pe002"]);
+        // family with no spouses keeps None
+        assert_eq!(db.families[1].father, None);
+        assert_eq!(db.families[1].mother, None);
+        assert!(db.families[1].children.is_empty());
+    }
+
+    #[test]
+    fn person_childof_parentin_links_parse() {
+        let db = parse(FULL).unwrap();
+        let person = &db.people[0];
+        assert_eq!(person.child_of, vec!["_f0000"]);
+        assert_eq!(person.parent_in, vec!["_f0001"]);
+        assert!(db.people[1].child_of.is_empty());
+        assert!(db.people[1].parent_in.is_empty());
+    }
+
+    #[test]
+    fn gender_markers_parse() {
+        let db = parse(FULL).unwrap();
+        assert_eq!(db.people[0].gender, crate::Gender::Male);
+        assert_eq!(db.people[1].gender, crate::Gender::Female);
+    }
+
+    #[test]
+    fn missing_gender_defaults_to_unknown() {
+        let db = parse(
+            r#"<database><people><person handle="_p0" id="I0000">
+            <name type="Birth Name"><first>Quiet</first><surname>Case</surname></name>
+            </person></people></database>"#,
+        )
+        .unwrap();
+        assert_eq!(db.people[0].gender, crate::Gender::Unknown);
+        assert!(db.warnings.is_empty());
+    }
+
+    #[test]
+    fn malformed_gender_warns_and_skips_the_person() {
+        let db = parse(
+            r#"<database><people>
+            <person handle="_p0" id="I0000"><gender>X</gender></person>
+            <person handle="_p1" id="I0001"><gender>M</gender>
+              <name type="Birth Name"><first>Ok</first><surname>Person</surname></name>
+            </person>
+            </people></database>"#,
+        )
+        .unwrap();
+        assert_eq!(db.people.len(), 1);
+        assert_eq!(db.people[0].handle, "_p1");
+        assert_eq!(db.warnings.len(), 1);
+        assert!(
+            db.warnings[0].contains("I0000"),
+            "warning: {}",
+            db.warnings[0]
+        );
+        assert!(
+            db.warnings[0].contains("gender"),
+            "warning: {}",
+            db.warnings[0]
+        );
+    }
+
+    #[test]
+    fn place_hierarchy_parses_via_placeref() {
+        let db = parse(FULL).unwrap();
+        let city = &db.places[0];
+        assert_eq!(city.name, "Uppsala");
+        assert_eq!(city.place_type.as_deref(), Some("City"));
+        assert_eq!(city.parent_handle.as_deref(), Some("_p0001"));
+        // place without placeref keeps None
+        assert_eq!(db.places[1].parent_handle, None);
+    }
+
+    #[test]
+    fn privacy_flags_parse_on_primary_records() {
+        let db = parse(FULL).unwrap();
+        // event
+        assert!(db.events[0].private);
+        assert!(!db.events[1].private);
+        // person
+        assert!(db.people[0].private);
+        assert!(!db.people[1].private);
+        // family
+        assert!(!db.families[0].private);
+        // place
+        assert!(!db.places[0].private);
+        assert!(db.places[1].private);
+    }
+
+    #[test]
+    fn event_cause_description_and_private_parse() {
+        let db = parse(FULL).unwrap();
+        assert_eq!(db.events[0].cause.as_deref(), Some("custom cause"));
+        assert_eq!(db.events[0].description.as_deref(), Some("firstborn"));
+        assert!(db.events[0].private);
+        // sibling event without cause/description keeps None
+        assert_eq!(db.events[1].cause, None);
+        assert_eq!(db.events[1].description, None);
+    }
+
+    #[test]
+    fn header_researcher_name_parses() {
+        let db = parse(FULL).unwrap();
+        assert_eq!(db.header.created_date.as_deref(), Some("2026-09-29"));
+        assert_eq!(db.header.version.as_deref(), Some("5.1.6"));
+        // &amp; is decoded by the XML parser
+        assert_eq!(
+            db.header.researcher_name.as_deref(),
+            Some("Dr. Whiskers & Sons")
+        );
+    }
+
+    #[test]
+    fn header_without_researcher_keeps_none() {
+        let db =
+            parse("<database><header><created date=\"2026-09-29\"/></header></database>").unwrap();
+        assert_eq!(db.header.researcher_name, None);
+    }
+
+    #[test]
+    fn tags_section_parses_into_the_database() {
+        let db = parse(FULL).unwrap();
+        assert_eq!(db.tags.len(), 2);
+        assert_eq!(db.tags[0].handle, "_t0000");
+        assert_eq!(db.tags[0].name, "ToDo");
+        assert_eq!(db.tags[0].color, "#fb9408");
+        assert_eq!(db.tags[0].priority, 0);
+        assert_eq!(db.tags[0].change, 10);
+        assert_eq!(db.tags[1].priority, 1);
+    }
+
+    #[test]
+    fn tag_handles_participate_in_duplicate_detection() {
+        let err = parse(
+            r##"<database><tags>
+            <tag handle="_t0" name="A" color="#000" priority="0" change="1"/>
+            <tag handle="_t0" name="B" color="#fff" priority="1" change="2"/>
+            </tags></database>"##,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            GrampsXmlError::DuplicateHandle { ref handle, .. } if handle == "_t0"
+        ));
+    }
+
+    #[test]
+    fn malformed_tag_priority_warns_and_skips_the_tag() {
+        let db = parse(
+            r##"<database><tags>
+            <tag handle="_t0" name="Broken" color="#000" priority="high" change="1"/>
+            <tag handle="_t1" name="Fine" color="#fff" priority="0" change="2"/>
+            </tags></database>"##,
+        )
+        .unwrap();
+        assert_eq!(db.tags.len(), 1);
+        assert_eq!(db.tags[0].name, "Fine");
+        assert_eq!(db.warnings.len(), 1);
+        assert!(
+            db.warnings[0].contains("_t0"),
+            "warning: {}",
+            db.warnings[0]
+        );
+    }
+
+    #[test]
+    fn tag_without_handle_is_a_hard_error() {
+        let err = parse(r##"<database><tags><tag name="X" color="#000" priority="0" change="1"/></tags></database>"##).unwrap_err();
+        assert!(matches!(
+            err,
+            GrampsXmlError::MissingHandle {
+                record: "tag",
+                position: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn unknown_elements_and_attributes_inside_full_records_are_tolerated() {
+        let db = parse(
+            r##"<database>
+            <tags>
+              <tag handle="_t0" name="Mine" color="#fff" priority="0" change="1" future_attr="x"/>
+              <future-tag handle="_t1" name="?" color="#000" priority="9" change="9"/>
+            </tags>
+            <people>
+              <person handle="_p0" id="I0000" future_attr="y">
+                <gender>M</gender>
+                <name type="Birth Name"><first>Frank</first><surname>Future</surname></name>
+                <future-meta><x/></future-meta>
+              </person>
+              <person handle="_p1" id="I0001">
+                <gender>F</gender>
+                <name type="Birth Name"><first>Joan</first></name>
+              </person>
+            </people>
+            <families>
+              <family handle="_f0" id="F0000" future_attr="z">
+                <future-meta/>
+                <father hlink="_p0"/>
+              </family>
+            </families>
+            <places>
+              <placeobj handle="_pl0" id="P0000" future_attr="w">
+                <pname value="Narnia"/>
+                <future-place-child/>
+              </placeobj>
+            </places>
+            <events>
+              <event handle="_e0" id="E0000">
+                <type>Birth</type>
+                <future-event-child/>
+              </event>
+            </events>
+            </database>"##,
+        )
+        .unwrap();
+        assert_eq!(db.tags.len(), 1);
+        assert_eq!(db.people.len(), 2);
+        assert_eq!(db.families[0].father.as_deref(), Some("_p0"));
+        assert_eq!(db.places[0].name, "Narnia");
+        assert_eq!(db.events[0].event_type, "Birth");
+        assert!(db.warnings.is_empty());
+    }
+
+    #[test]
+    fn missing_hlink_on_eventref_warns_and_keeps_the_record() {
+        let db = parse(
+            r#"<database><people><person handle="_p0" id="I0000">
+              <gender>M</gender>
+              <eventref role="Primary"/>
+              <eventref hlink="_e0" role="Primary"/>
+            </person></people></database>"#,
+        )
+        .unwrap();
+        assert_eq!(db.people[0].event_refs.len(), 1);
+        assert_eq!(db.people[0].event_refs[0].event_handle, "_e0");
+        assert_eq!(db.warnings.len(), 1);
+        assert!(
+            db.warnings[0].contains("eventref"),
+            "warning: {}",
+            db.warnings[0]
+        );
+    }
+
+    #[test]
+    fn missing_hlink_on_childref_warns_and_keeps_the_family() {
+        let db = parse(
+            r#"<database><families><family handle="_f0" id="F0000">
+              <childref/>
+              <childref hlink="_p0"/>
+            </family></families></database>"#,
+        )
+        .unwrap();
+        assert_eq!(db.families[0].children, vec!["_p0"]);
+        assert_eq!(db.warnings.len(), 1);
+        assert!(
+            db.warnings[0].contains("childref"),
+            "warning: {}",
+            db.warnings[0]
+        );
+    }
+
+    #[test]
+    fn missing_place_hlink_warns_and_keeps_the_event() {
+        let db = parse(
+            r#"<database><events>
+            <event handle="_e0" id="E0000"><type>Birth</type><place/></event>
+            </events></database>"#,
+        )
+        .unwrap();
+        assert_eq!(db.events[0].place_handle, None);
+        assert_eq!(db.warnings.len(), 1);
+        assert!(
+            db.warnings[0].contains("place"),
+            "warning: {}",
+            db.warnings[0]
+        );
+    }
+
+    #[test]
+    fn real_fixture_parses_full_people_families_and_places() {
+        let db = parse(include_str!("../../../tests/fixtures/data.gramps")).unwrap();
+        // Harry Meowser: gender, birth name, Primary eventref, childof link
+        let harry = &db.people[0];
+        assert_eq!(harry.gender, crate::Gender::Male);
+        assert_eq!(harry.names.len(), 1);
+        assert_eq!(harry.names[0].first.as_deref(), Some("Harry"));
+        assert_eq!(harry.names[0].surnames[0].value, "Meowser");
+        assert_eq!(harry.event_refs.len(), 1);
+        assert_eq!(harry.event_refs[0].role, "Primary");
+        assert!(!harry.private);
+        assert_eq!(harry.child_of.len(), 1);
+        // Abraham has two Primary eventrefs (birth + death)
+        let abraham = &db.people[4];
+        assert_eq!(abraham.event_refs.len(), 2);
+        assert_eq!(abraham.parent_in.len(), 1);
+        // F0000: father George, mother Sally, child Harry, no family events
+        let family = &db.families[0];
+        assert_eq!(family.rel.as_deref(), Some("Unknown"));
+        assert_eq!(
+            family.father.as_deref(),
+            Some("_103e39a531a86a1b01d276ee0cf8")
+        );
+        assert_eq!(
+            family.mother.as_deref(),
+            Some("_103e39ab2114249d489d0884174")
+        );
+        assert_eq!(family.children.len(), 1);
+        assert!(family.event_refs.is_empty());
+        // places in this fixture carry no parent chain
+        assert!(db.places.iter().all(|p| p.parent_handle.is_none()));
+        // events are all public, none carry cause/description
+        assert!(db.events.iter().all(|e| !e.private));
+        assert!(
+            db.events
+                .iter()
+                .all(|e| e.cause.is_none() && e.description.is_none())
+        );
+        assert!(db.tags.is_empty());
+        assert!(db.warnings.is_empty());
+    }
+
+    #[test]
+    fn families_fixture_parses_couple_children_and_family_events() {
+        let db = parse(include_str!("../../../tests/fixtures/families.gramps")).unwrap();
+        // family F0000 holds Marriage / Marriage-Alternative / Divorce
+        let family = &db.families[0];
+        assert_eq!(family.rel.as_deref(), Some("Marriage"));
+        assert_eq!(family.father.as_deref(), Some("_fp000"));
+        assert_eq!(family.mother.as_deref(), Some("_fp001"));
+        assert_eq!(family.children, vec!["_fp002"]);
+        assert_eq!(family.event_refs.len(), 3);
+        assert_eq!(family.event_refs[0].event_handle, "_f0000");
+        assert_eq!(family.event_refs[0].role, "Family");
+        // Adam: Primary on the dedup case + the ordination, Witness on baptism
+        let adam = &db.people[0];
+        assert_eq!(adam.gender, crate::Gender::Male);
+        assert_eq!(adam.event_refs.len(), 3);
+        assert_eq!(adam.event_refs[0].role, "Primary");
+        assert_eq!(adam.event_refs[2].role, "Witness");
+        // Eve: Primary + Witness (multi-role on one event)
+        let eve = &db.people[1];
+        assert_eq!(eve.event_refs.len(), 2);
+        assert_eq!(eve.event_refs[1].role, "Witness");
+        assert!(db.warnings.is_empty());
+    }
+
+    #[test]
+    fn edge_case_fixture_parses_private_records_and_hostile_names() {
+        let db = parse(include_str!("../../../tests/fixtures/edge-cases.gramps")).unwrap();
+        // private event and private person
+        assert!(db.events[0].private);
+        assert!(!db.events[1].private);
+        assert!(db.people[0].private);
+        assert!(!db.people[1].private);
+        // hostile text is decoded faithfully: entities unescaped, markup literal
+        let ava = &db.people[0];
+        assert_eq!(
+            ava.names[0].first.as_deref(),
+            Some("Ava <script>alert(\"gotcha\")</script>")
+        );
+        assert_eq!(ava.names[0].surnames[0].value, "Pryvat & Sons");
+        assert_eq!(ava.event_refs.len(), 1);
+        assert_eq!(ava.event_refs[0].event_handle, "_e0000");
+        assert_eq!(db.header.version, None, "unversioned header stays None");
         assert!(db.warnings.is_empty());
     }
 }

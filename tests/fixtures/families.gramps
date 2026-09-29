@@ -71,7 +71,7 @@
         <first>Adam</first>
         <surname>Uplands</surname>
       </name>
-      <parentin hlink="_f0000"/>
+      <parentin hlink="_fam0000"/>
       <eventref hlink="_f0003" role="Primary"/>
       <eventref hlink="_f0004" role="Primary"/>
       <eventref hlink="_f0005" role="Witness"/>
@@ -82,7 +82,7 @@
         <first>Eve</first>
         <surname>Uplands</surname>
       </name>
-      <parentin hlink="_f0000"/>
+      <parentin hlink="_fam0000"/>
       <eventref hlink="_f0003" role="Primary"/>
       <eventref hlink="_f0004" role="Witness"/>
     </person>
@@ -92,11 +92,11 @@
         <first>Cain</first>
         <surname>Uplands</surname>
       </name>
-      <childof hlink="_f0000"/>
+      <childof hlink="_fam0000"/>
     </person>
   </people>
   <families>
-    <family handle="_f0000" change="403" id="F0000">
+    <family handle="_fam0000" change="403" id="F0000">
       <rel type="Marriage"/>
       <father hlink="_fp000"/>
       <mother hlink="_fp001"/>

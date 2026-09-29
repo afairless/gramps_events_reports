@@ -14,19 +14,25 @@
 //! document onto the typed [`Database`] model (see [`crate::parse`] for the
 //! XML mapping rules and [`crate::error`] for the failure modes).
 //!
-//! The model is a *skeleton* mirror of the `grampsxml.dtd`: records carry
-//! handles, not resolved links — a parse-time handle index validates that
-//! every record has a unique handle, and cross-reference *resolution* lives
-//! in `event-core`. Dates are fully wired: the four interchangeable date
-//! elements (`dateval`, `daterange`, `datespan`, `datestr`) parse into
-//! `gramps-dates`' [`GrampsDate`].
+//! The model mirrors the `grampsxml.dtd`: every primary record carries a
+//! unique `handle` (validated by a parse-time handle index), and records
+//! carry handles, not resolved links — cross-reference *resolution* lives in
+//! `event-core`. Full records parse for the sections v1 consumes: person
+//! names (multiple names, surname prefix/`prim`), `eventref` roles, family
+//! members, the place hierarchy, privacy flags on every primary record, and
+//! the `header`/`tags` sections; unknown elements and attributes are
+//! tolerated (forward compatibility). Dates are fully wired: the four
+//! interchangeable date elements (`dateval`, `daterange`, `datespan`,
+//! `datestr`) parse into `gramps-dates`' [`GrampsDate`].
 
 pub mod error;
 pub mod model;
 pub mod parse;
 
 pub use error::GrampsXmlError;
-pub use model::{Database, Event, Family, Header, Person, Place};
+pub use model::{
+    Database, Event, EventRef, Family, Gender, Header, Person, PersonName, Place, Surname, Tag,
+};
 pub use parse::parse_database;
 
 use std::io::{Cursor, Read};

@@ -1,28 +1,30 @@
-//! Typed model of a minimal Gramps database.
+//! Typed model of a parsed Gramps database.
 //!
-//! This is the *skeleton* mirror of the `grampsxml.dtd` sections the v1
-//! pipeline consumes: [`Database`] holds the header and the `events`,
-//! `people`, `families` and `places` sections, with every primary record
-//! keyed by its unique `handle`. Records carry handles, not resolved links
-//! — cross-reference resolution (handle → record index, eventref roles,
-//! place hierarchies) lives in `event-core` (plan §7.1).
+//! This module mirrors the `grampsxml.dtd` sections the v1 pipeline
+//! consumes: [`Database`] holds the header, tags, events, people, families
+//! and places sections, with every primary record keyed by its unique
+//! `handle`. Records carry handles, not resolved links — cross-reference
+//! resolution (handle → record index, eventref roles, place hierarchies)
+//! lives in `event-core` (plan §7.1).
 //!
-//! Deliberately out of scope here, landing in the full-record milestone:
-//! person names, eventrefs, family members, place parent chains, privacy
-//! flags and richer `header`/`tags` parsing. Unknown elements and
-//! attributes are ignored at parse time (forward compatibility).
+//! Full-record scope (plan §12 step 5): person names (multiple names,
+//! surname prefix/`prim`), `eventref` roles, family members, the place
+//! parent chain, privacy flags on every primary record, and the
+//! `header`/`tags` sections. Unknown elements and attributes are ignored at
+//! parse time (forward compatibility), so the model deliberately captures
+//! only the fields v1 consumes.
 
 use gramps_dates::GrampsDate;
 
 /// A parsed `.gramps` database: the sections the v1 pipeline consumes, plus
 /// the warnings raised while decoding them.
-///
-/// Skeleton scope (container + minimal records): dates are fully wired into
-/// [`Event`] via [`GrampsDate`]; every other record field is deliberately
-/// minimal until the full-record milestone.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Database {
     pub header: Header,
+    /// The `<tags>` section: named, colored markers that records point at
+    /// via `tagref` links. The tag→record linkage is resolved later, in
+    /// `event-core`.
+    pub tags: Vec<Tag>,
     pub events: Vec<Event>,
     pub people: Vec<Person>,
     pub families: Vec<Family>,
@@ -34,9 +36,8 @@ pub struct Database {
     pub warnings: Vec<String>,
 }
 
-/// Contents of the `<header>` section — the skeleton keeps just the export
-/// stamp; `researcher`, `name-formats`, `tags` and friends land in the
-/// full-record milestone.
+/// Contents of the `<header>` section: the `<created>` stamp and, when
+/// present, the exporter's `<researcher>` name.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Header {
     /// The `date` attribute of `<header><created .../>` — when the tree was
@@ -45,6 +46,27 @@ pub struct Header {
     /// The `version` attribute of `<created>` — the Gramps release that
     /// exported the file (e.g. `"5.1.6"`).
     pub version: Option<String>,
+    /// The `<resname>` text of the `<researcher>` section — who exported
+    /// the tree.
+    pub researcher_name: Option<String>,
+}
+
+/// A `<tag>` record — a named marker color from the `<tags>` section.
+///
+/// Records reference tags via `tagref` links; the tag→record linkage is
+/// resolved later, in `event-core`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag {
+    /// Unique DTD `ID`; the key `tagref` links point at.
+    pub handle: String,
+    /// The `name` attribute, e.g. `"ToDo"`.
+    pub name: String,
+    /// The `color` attribute as Gramps stores it (e.g. `"#fb9408"`).
+    pub color: String,
+    /// The `priority` attribute — lower sorts first in Gramps' UI.
+    pub priority: i32,
+    /// The `change` attribute — last-modified Unix timestamp.
+    pub change: i64,
 }
 
 /// An `<event>` record.
@@ -67,29 +89,112 @@ pub struct Event {
     pub date: Option<GrampsDate>,
     /// The `hlink` of the event's `<place>` element, if present.
     pub place_handle: Option<String>,
+    /// The `<cause>` element text, if present.
+    pub cause: Option<String>,
+    /// The `<description>` element text, if present.
+    pub description: Option<String>,
+    /// `priv="1"` — excluded from default output (plan §8.7).
+    pub private: bool,
     /// The `change` attribute — last-modified Unix timestamp.
     pub change: i64,
 }
 
-/// A `<person>` record — skeleton: handle + id only. Names, gender,
-/// eventrefs and family links land in the full-record milestone.
+/// The gender marker of a `<person>` — the DTD's `gender` element holds
+/// `M`, `F`, or `U`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gender {
+    /// `M`
+    Male,
+    /// `F`
+    Female,
+    /// `U` — unknown/undisclosed.
+    Unknown,
+}
+
+/// A surname within a [`PersonName`] — the DTD's repeated `surname*`
+/// elements, each carrying an optional `prefix` (e.g. `"van der"`) and a
+/// `prim` flag marking the primary surname of the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Surname {
+    /// The surname text.
+    pub value: String,
+    /// The `prefix` attribute (e.g. `"van"` in "van Beethoven").
+    pub prefix: Option<String>,
+    /// The `prim` attribute: `"1"` marks the primary surname of the name.
+    pub prim: bool,
+}
+
+/// A `<name>` element of a [`Person`]: the primary name plus any alternates
+/// (married names, "also known as" names, ...), in document order. The
+/// first non-`alt` name is the person's primary display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonName {
+    /// The `type` attribute — `"Birth Name"`, `"Married Name"`, ... (empty
+    /// when absent).
+    pub name_type: String,
+    /// True when the `alt` attribute is `"1"` — an alternate name.
+    pub alt: bool,
+    /// The `<first>` element text.
+    pub first: Option<String>,
+    /// The `surname*` elements (multiple surnames, with prefix/`prim`).
+    pub surnames: Vec<Surname>,
+    /// The `<suffix>` element text (e.g. `"Jr."`).
+    pub suffix: Option<String>,
+}
+
+/// A person's or family's `<eventref>`: a link to an event plus the role the
+/// subject plays in it (`"Primary"`, `"Witness"`, `"Family"`, ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventRef {
+    /// The `hlink` — the event's handle.
+    pub event_handle: String,
+    /// The `role` attribute verbatim; empty when the exporter omitted it.
+    pub role: String,
+}
+
+/// A `<person>` record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Person {
     pub handle: String,
     pub gramps_id: Option<String>,
+    /// The `<gender>` element — `M`, `F`, or `U` (`Unknown` when the
+    /// element is absent).
+    pub gender: Gender,
+    /// The `name*` elements in document order (primary first).
+    pub names: Vec<PersonName>,
+    /// The `eventref*` links — (event handle, role) pairs.
+    pub event_refs: Vec<EventRef>,
+    /// The `childof*` family handles — families this person is a child of.
+    pub child_of: Vec<String>,
+    /// The `parentin*` family handles — families this person is a parent in.
+    pub parent_in: Vec<String>,
+    /// `priv="1"` — excluded from default output (plan §8.7).
+    pub private: bool,
 }
 
-/// A `<family>` record — skeleton: handle + id only. Spouses, children and
-/// family eventrefs land in the full-record milestone.
+/// A `<family>` record.
+///
+/// Marriage, divorce and separation events hang off the family's
+/// `eventref*` links rather than off either spouse (§3.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Family {
     pub handle: String,
     pub gramps_id: Option<String>,
+    /// The `<rel type=.../>` relationship kind, if present.
+    pub rel: Option<String>,
+    /// The `father` person handle, if present.
+    pub father: Option<String>,
+    /// The `mother` person handle, if present.
+    pub mother: Option<String>,
+    /// The `childref*` person handles, in document order.
+    pub children: Vec<String>,
+    /// The `eventref*` links — (event handle, role) pairs.
+    pub event_refs: Vec<EventRef>,
+    /// `priv="1"` — excluded from default output (plan §8.7).
+    pub private: bool,
 }
 
-/// A `<placeobj>` record — skeleton: handle, id, display name and kind.
-/// The parent-chain (`placeref`) hierarchy lands in the full-record
-/// milestone.
+/// A `<placeobj>` record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub handle: String,
@@ -99,6 +204,11 @@ pub struct Place {
     pub name: String,
     /// The `type` attribute (`"Country"`, `"City"`, `"State"`, ...).
     pub place_type: Option<String>,
+    /// The `hlink` of the first `<placeref>` child — the parent place in
+    /// the place hierarchy, if present.
+    pub parent_handle: Option<String>,
+    /// `priv="1"` — excluded from default output (plan §8.7).
+    pub private: bool,
 }
 
 #[cfg(test)]
@@ -111,6 +221,7 @@ mod tests {
     fn model_types_are_compareable_and_defaultable() {
         let db = Database::default();
         assert_eq!(db, Database::default());
+        assert!(db.tags.is_empty());
         assert!(db.events.is_empty());
         assert!(db.people.is_empty());
         assert!(db.families.is_empty());
