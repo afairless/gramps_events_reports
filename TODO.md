@@ -7,6 +7,8 @@ Reorders the plan's §12 milestones per two confirmed adjustments:
 
 > The repository is not yet a git repository; the first commit (`git init -b main`, then the plan documents) precedes step 1.
 
+## Steps
+
 | # | Commit message | Logical unit | Key deliverables | Tests |
 | --- | --- | --- | --- | --- |
 | 1 | chore: scaffold cargo workspace with crate skeletons and fixtures | Workspace scaffold | workspace `Cargo.toml`, `crates/{gramps-xml,gramps-dates,event-core,writers,cli,web}/`, `rustfmt.toml`, `.gitignore`, `tests/fixtures/` (copy of `data.gramps` + crafted edge-case XML: date forms, ranges, spans, partial/BC/non-Gregorian dates, orphans, family events, multi-role, private, unknown sections, zipped/gzipped containers) | Smoke |
