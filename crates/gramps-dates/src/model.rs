@@ -50,6 +50,20 @@ impl Calendar {
             _ => return None,
         })
     }
+
+    /// The Gramps calendar name, as written in `cformat=` attributes and in
+    /// display-string suffixes (inverse of [`Calendar::from_gramps_str`]).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Calendar::Gregorian => "Gregorian",
+            Calendar::Julian => "Julian",
+            Calendar::Hebrew => "Hebrew",
+            Calendar::FrenchRepublican => "French Republican",
+            Calendar::Persian => "Persian",
+            Calendar::Islamic => "Islamic",
+            Calendar::Swedish => "Swedish",
+        }
+    }
 }
 
 /// Date modifier, matching Gramps `Date.MOD_*` (`date.py`).
@@ -171,6 +185,10 @@ pub enum DateError {
     /// Unknown `newyear=` attribute (valid: Jan1|Mar1|Mar25|Sep1).
     #[error("invalid newyear {0:?}: expected Jan1, Mar1, Mar25 or Sep1")]
     InvalidNewYear(String),
+    /// A `daterange`/`datespan` whose stop endpoint sorts before its start
+    /// endpoint — treated as a hard parse error (plan §7.1).
+    #[error("daterange/datespan stop {1:?} sorts before start {0:?}")]
+    RangeStartAfterStop(String, String),
 }
 
 /// A Gramps date.
@@ -178,8 +196,14 @@ pub enum DateError {
 /// The struct is deliberately flat and mirrors `date.py`: a `dateval` fills
 /// `ymd` with the single date; `daterange`/`datespan` additionally fill
 /// `stop` (both endpoints). `display` carries the human-readable rendering
-/// Gramps would print (e.g. `"about 1900"`); milestone 4 replaces the
-/// normalized value stored today with the full display-string formatting.
+/// Gramps would print — the same strings `Date.__str__` produces, e.g.
+/// `"bef 1914-01-01"`, `"est 1822-11-00 - 1823-04-00"` or
+/// `"1900-01-01 (Julian)"` — computed at parse time by
+/// [`GrampsDate::compute_display`] (`crate::display`).
+///
+/// **Text-only dates** (`datestr`): the verbatim text is stored in
+/// `display`, the modifier is [`Modifier::TextOnly`] and `ymd` stays
+/// `(0, 0, 0)`; use [`GrampsDate::text`] to read it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrampsDate {
     pub calendar: Calendar,
@@ -194,7 +218,8 @@ pub struct GrampsDate {
     /// `dualdated="1"` — e.g. dates straddling the Julian/Gregorian overlap.
     pub dual_dated: bool,
     pub new_year: NewYear,
-    /// What Gramps would print for this date, e.g. `"about 1900"`.
+    /// What Gramps would print for this date, e.g. `"bef 1914-01-01"`;
+    /// for [`Modifier::TextOnly`] dates this field holds the verbatim text.
     pub display: String,
 }
 
@@ -207,6 +232,11 @@ impl GrampsDate {
     /// The start year of the date, or `None` when the year is unknown (0).
     pub fn year(&self) -> Option<i32> {
         (self.ymd.0 != 0).then_some(self.ymd.0)
+    }
+
+    /// The verbatim text of a `datestr` date, or `None` for any other form.
+    pub fn text(&self) -> Option<&str> {
+        (self.modifier == Modifier::TextOnly).then_some(self.display.as_str())
     }
 }
 

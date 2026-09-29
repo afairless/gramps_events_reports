@@ -1,18 +1,24 @@
-//! Parsing of the `dateval` element form.
+//! Parsing of the four Gramps date element forms.
 //!
-//! Gramps serializes a plain date as a `<dateval>` element (see
+//! Gramps serializes a date as one of four interchangeable XML elements (see
 //! `plugins/export/exportxml.py`):
 //!
 //! ```xml
 //! <dateval val="YYYY-MM-DD" [type=before|after|about]
 //!          [quality=estimated|calculated] [cformat=...]
 //!          [dualdated="1"] [newyear=Jan1|Mar1|Mar25|Sep1]/>
+//! <daterange start="..." stop="..." [quality=...] [cformat=...]
+//!            [dualdated="1"] [newyear=...]/>
+//! <datespan start="..." stop="..." [quality=...] [cformat=...]
+//!            [dualdated="1"] [newyear=...]/>
+//! <datestr val="free text"/>
 //! ```
 //!
-//! `val` is an ISO-ish date in the form `YYYY`, `YYYY-MM` or `YYYY-MM-DD`;
-//! missing month/day mean "partial" and parse to `0` (see [`crate::model`]).
-//! BC years are negative (`-0550-04-22`), and an unknown year may be written
-//! as `????` (Gramps' exporter emits `?` for years it cannot represent).
+//! `val`/`start`/`stop` are ISO-ish dates in the form `YYYY`, `YYYY-MM` or
+//! `YYYY-MM-DD`; missing month/day mean "partial" and parse to `0` (see
+//! [`crate::model`]). BC years are negative (`-0550-04-22`), and an unknown
+//! year may be written as `????` (Gramps' exporter emits `?` for years it
+//! cannot represent).
 
 use crate::model::{Calendar, DateError, GrampsDate, Modifier, NewYear, Quality};
 
@@ -61,47 +67,200 @@ pub struct DatevalAttrs<'a> {
 /// ```
 pub fn parse_dateval(attrs: DatevalAttrs<'_>) -> Result<GrampsDate, DateError> {
     let ymd = parse_val(attrs.val)?;
-    let calendar = match attrs.cformat {
-        None => Calendar::Gregorian,
-        Some(s) => {
-            Calendar::from_gramps_str(s).ok_or_else(|| DateError::InvalidCalendar(s.to_string()))?
-        }
-    };
     let modifier = match attrs.kind {
         None => Modifier::None,
         Some(s) => {
             Modifier::from_gramps_str(s).ok_or_else(|| DateError::InvalidModifier(s.to_string()))?
         }
     };
-    let quality = match attrs.quality {
-        None => Quality::None,
-        Some(s) => {
-            Quality::from_gramps_str(s).ok_or_else(|| DateError::InvalidQuality(s.to_string()))?
-        }
-    };
-    let new_year = match attrs.newyear {
-        None => NewYear::Jan1,
-        Some(s) => {
-            NewYear::from_gramps_str(s).ok_or_else(|| DateError::InvalidNewYear(s.to_string()))?
-        }
-    };
-    let dual_dated = match attrs.dualdated {
-        None => false,
-        Some("1") => true,
-        Some(other) => return Err(DateError::InvalidDualDated(other.to_string())),
-    };
-    Ok(GrampsDate {
-        calendar,
+    let mut d = GrampsDate {
+        calendar: parse_calendar(attrs.cformat)?,
         modifier,
-        quality,
+        quality: parse_quality(attrs.quality)?,
         ymd,
         stop: None,
-        dual_dated,
-        new_year,
-        // Milestone 4 replaces this with the full Gramps display-string
-        // formatting (modifier prefixes, month names, BC suffix, ranges).
-        display: attrs.val.trim().to_string(),
+        dual_dated: parse_dual_dated(attrs.dualdated)?,
+        new_year: parse_new_year(attrs.newyear)?,
+        display: String::new(),
+    };
+    // The parsers stamp the full Gramps display string at parse time
+    // (the `Date.__str__` equivalent, e.g. "bef 1914-01-01").
+    d.display = d.compute_display();
+    Ok(d)
+}
+
+/// String attributes of the `<daterange>` / `<datespan>` elements, exactly
+/// as read from XML. `start` and `stop` are required (grampsxml.dtd); every
+/// other attribute is optional and matches the grammar Gramps' exporter
+/// writes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DateRangeAttrs<'a> {
+    /// The `start` attribute: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; BC years
+    /// are negative; unknown years may be `????`. Required.
+    pub start: &'a str,
+    /// The `stop` attribute: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Required.
+    pub stop: &'a str,
+    /// The `quality` attribute: `estimated` or `calculated`.
+    pub quality: Option<&'a str>,
+    /// The `cformat` attribute: one of the seven Gramps calendar names.
+    pub cformat: Option<&'a str>,
+    /// The `dualdated` attribute: `"1"` when the date is dual dated.
+    pub dualdated: Option<&'a str>,
+    /// The `newyear` attribute: `Jan1`, `Mar1`, `Mar25` or `Sep1`.
+    pub newyear: Option<&'a str>,
+}
+
+/// Parse a `<daterange>` element into a [`GrampsDate`].
+///
+/// Both endpoints are validated and ordered (`stop` must not sort before
+/// `start`); the display string is the compound `start - stop` form.
+///
+/// ```
+/// use gramps_dates::parse::{DateRangeAttrs, parse_daterange};
+/// use gramps_dates::Modifier;
+///
+/// let d = parse_daterange(DateRangeAttrs {
+///     start: "1914-01-01",
+///     stop: "1918-04-01",
+///     ..DateRangeAttrs::default()
+/// })
+/// .unwrap();
+///
+/// assert_eq!(d.modifier, Modifier::Range);
+/// assert_eq!(d.ymd, (1914, 1, 1));
+/// assert_eq!(d.stop, Some((1918, 4, 1)));
+/// assert!(d.is_range());
+/// assert_eq!(d.to_string(), "1914-01-01 - 1918-04-01");
+/// ```
+pub fn parse_daterange(attrs: DateRangeAttrs<'_>) -> Result<GrampsDate, DateError> {
+    parse_compound(attrs, Modifier::Range)
+}
+
+/// Parse a `<datespan>` element into a [`GrampsDate`].
+///
+/// A span is a compound date whose event *lasted* from the start to the stop
+/// endpoint (e.g. a tenure); it is stored with [`Modifier::Span`]. All the
+/// validation of [`parse_daterange`] applies.
+///
+/// ```
+/// use gramps_dates::parse::{DateRangeAttrs, parse_datespan};
+/// use gramps_dates::Modifier;
+///
+/// let d = parse_datespan(DateRangeAttrs {
+///     start: "1822-11-01",
+///     stop: "1823-04-01",
+///     ..DateRangeAttrs::default()
+/// })
+/// .unwrap();
+///
+/// assert_eq!(d.modifier, Modifier::Span);
+/// assert_eq!(d.ymd, (1822, 11, 1));
+/// assert_eq!(d.stop, Some((1823, 4, 1)));
+/// ```
+pub fn parse_datespan(attrs: DateRangeAttrs<'_>) -> Result<GrampsDate, DateError> {
+    parse_compound(attrs, Modifier::Span)
+}
+
+/// Parse a `<datestr>` element into a [`GrampsDate`].
+///
+/// Text-only dates have no calendar math: the verbatim text is stored in
+/// `GrampsDate::display`, the modifier is [`Modifier::TextOnly`] and `ymd`
+/// stays `(0, 0, 0)`.
+///
+/// ```
+/// use gramps_dates::parse::parse_datestr;
+/// use gramps_dates::Modifier;
+///
+/// let d = parse_datestr("circa the harvest festival").unwrap();
+///
+/// assert_eq!(d.modifier, Modifier::TextOnly);
+/// assert_eq!(d.ymd, (0, 0, 0));
+/// assert_eq!(d.year(), None);
+/// assert!(!d.is_range());
+/// assert_eq!(d.text(), Some("circa the harvest festival"));
+/// assert_eq!(d.to_string(), "circa the harvest festival");
+/// ```
+pub fn parse_datestr(val: &str) -> Result<GrampsDate, DateError> {
+    if val.is_empty() {
+        return Err(DateError::EmptyVal);
+    }
+    Ok(GrampsDate {
+        calendar: Calendar::Gregorian,
+        modifier: Modifier::TextOnly,
+        quality: Quality::None,
+        ymd: (0, 0, 0),
+        stop: None,
+        dual_dated: false,
+        new_year: NewYear::Jan1,
+        display: val.to_string(),
     })
+}
+
+/// Shared implementation of the `daterange`/`datespan` parsers: validates
+/// both endpoints, enforces the ordering (`stop` must not sort before
+/// `start` — a hard parse error per the plan §7.1), and computes the
+/// compound display string.
+fn parse_compound(attrs: DateRangeAttrs<'_>, modifier: Modifier) -> Result<GrampsDate, DateError> {
+    let start = parse_val(attrs.start)?;
+    let stop = parse_val(attrs.stop)?;
+    if stop < start {
+        return Err(DateError::RangeStartAfterStop(
+            attrs.start.trim().to_string(),
+            attrs.stop.trim().to_string(),
+        ));
+    }
+    let mut d = GrampsDate {
+        calendar: parse_calendar(attrs.cformat)?,
+        modifier,
+        quality: parse_quality(attrs.quality)?,
+        ymd: start,
+        stop: Some(stop),
+        dual_dated: parse_dual_dated(attrs.dualdated)?,
+        new_year: parse_new_year(attrs.newyear)?,
+        display: String::new(),
+    };
+    d.display = d.compute_display();
+    Ok(d)
+}
+
+/// Parse the shared `cformat=` attribute (defaults to Gregorian).
+fn parse_calendar(cformat: Option<&str>) -> Result<Calendar, DateError> {
+    match cformat {
+        None => Ok(Calendar::Gregorian),
+        Some(s) => Ok(Calendar::from_gramps_str(s)
+            .ok_or_else(|| DateError::InvalidCalendar(s.to_string()))?),
+    }
+}
+
+/// Parse the shared `quality=` attribute (defaults to `None`).
+fn parse_quality(quality: Option<&str>) -> Result<Quality, DateError> {
+    match quality {
+        None => Ok(Quality::None),
+        Some(s) => {
+            Ok(Quality::from_gramps_str(s)
+                .ok_or_else(|| DateError::InvalidQuality(s.to_string()))?)
+        }
+    }
+}
+
+/// Parse the shared `newyear=` attribute (defaults to `Jan1`).
+fn parse_new_year(newyear: Option<&str>) -> Result<NewYear, DateError> {
+    match newyear {
+        None => Ok(NewYear::Jan1),
+        Some(s) => {
+            Ok(NewYear::from_gramps_str(s)
+                .ok_or_else(|| DateError::InvalidNewYear(s.to_string()))?)
+        }
+    }
+}
+
+/// Parse the shared `dualdated=` attribute; only the accepted `"1"` is true.
+fn parse_dual_dated(dualdated: Option<&str>) -> Result<bool, DateError> {
+    match dualdated {
+        None => Ok(false),
+        Some("1") => Ok(true),
+        Some(other) => Err(DateError::InvalidDualDated(other.to_string())),
+    }
 }
 
 /// Parse the `val` attribute into a partial-date `(year, month, day)` triple.
@@ -237,7 +396,7 @@ mod tests {
     fn leading_and_trailing_whitespace_is_tolerated() {
         let d = parse("  1822-11  ").unwrap();
         assert_eq!(d.ymd, (1822, 11, 0));
-        assert_eq!(d.display, "1822-11");
+        assert_eq!(d.display, "1822-11-00");
     }
 
     #[test]
@@ -368,7 +527,7 @@ mod tests {
         assert_eq!(d.quality, Quality::Estimated);
         assert!(d.dual_dated);
         assert_eq!(d.new_year, NewYear::Mar1);
-        assert_eq!(d.display, "1700-02-18");
+        assert_eq!(d.display, "est abt 1699/0-02-18 (Julian,Mar1)");
     }
 
     #[test]
@@ -451,5 +610,223 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err, DateError::InvalidNewYear("June1".to_string()));
+    }
+
+    // ---- compound (`daterange` / `datespan`) and text (`datestr`) ----
+
+    #[test]
+    fn display_strings_are_computed_at_parse_time() {
+        let d = parse_dateval(DatevalAttrs {
+            val: "1914-06-28",
+            kind: Some("before"),
+            ..DatevalAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.display, "bef 1914-06-28");
+        let d = parse_dateval(DatevalAttrs {
+            val: "1822-00-00",
+            ..DatevalAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.display, "1822-00-00");
+        let d = parse_dateval(DatevalAttrs {
+            val: "1900-01-01",
+            cformat: Some("Julian"),
+            ..DatevalAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.display, "1900-01-01 (Julian)");
+    }
+
+    #[test]
+    fn daterange_parses_both_endpoints() {
+        let d = parse_daterange(DateRangeAttrs {
+            start: "1914-01-01",
+            stop: "1918-04-01",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.modifier, Modifier::Range);
+        assert_eq!(d.ymd, (1914, 1, 1));
+        assert_eq!(d.stop, Some((1918, 4, 1)));
+        assert!(d.is_range());
+        assert_eq!(d.display, "1914-01-01 - 1918-04-01");
+    }
+
+    #[test]
+    fn daterange_accepts_partial_endpoints() {
+        let d = parse_daterange(DateRangeAttrs {
+            start: "1822-11-00",
+            stop: "1823-04-00",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.ymd, (1822, 11, 0));
+        assert_eq!(d.stop, Some((1823, 4, 0)));
+        assert_eq!(d.display, "1822-11-00 - 1823-04-00");
+        // year-only endpoints: the "1822-1824" range from the plan fixtures
+        let d = parse_daterange(DateRangeAttrs {
+            start: "1822-00-00",
+            stop: "1824-00-00",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.ymd, (1822, 0, 0));
+        assert_eq!(d.stop, Some((1824, 0, 0)));
+        assert_eq!(d.display, "1822-00-00 - 1824-00-00");
+    }
+
+    #[test]
+    fn datespan_uses_span_modifier() {
+        let d = parse_datespan(DateRangeAttrs {
+            start: "1822-11-01",
+            stop: "1823-04-01",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.modifier, Modifier::Span);
+        assert_eq!(d.ymd, (1822, 11, 1));
+        assert_eq!(d.stop, Some((1823, 4, 1)));
+        assert!(d.is_range());
+        assert_eq!(d.display, "1822-11-01 - 1823-04-01");
+    }
+
+    #[test]
+    fn compound_shared_attributes_apply() {
+        let d = parse_datespan(DateRangeAttrs {
+            start: "1822-00-00",
+            stop: "1824-00-00",
+            quality: Some("estimated"),
+            cformat: Some("Julian"),
+            dualdated: Some("1"),
+            newyear: Some("Mar25"),
+        })
+        .unwrap();
+        assert_eq!(d.modifier, Modifier::Span);
+        assert_eq!(d.quality, Quality::Estimated);
+        assert_eq!(d.calendar, Calendar::Julian);
+        assert!(d.dual_dated);
+        assert_eq!(d.new_year, NewYear::Mar25);
+        // dual-dated compounds render both endpoints in slash form
+        assert_eq!(d.display, "est 1821/2-00-00 - 1823/4-00-00 (Julian,Mar25)");
+    }
+
+    #[test]
+    fn compound_stop_before_start_is_a_hard_error() {
+        let err = parse_daterange(DateRangeAttrs {
+            start: "1918-04-01",
+            stop: "1914-01-01",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap_err();
+        assert_eq!(
+            err,
+            DateError::RangeStartAfterStop("1918-04-01".to_string(), "1914-01-01".to_string())
+        );
+        // also rejects out-of-order partial endpoints
+        let err = parse_datespan(DateRangeAttrs {
+            start: "1823-04-00",
+            stop: "1822-11-00",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap_err();
+        assert_eq!(
+            err,
+            DateError::RangeStartAfterStop("1823-04-00".to_string(), "1822-11-00".to_string())
+        );
+        // equal endpoints are degenerate but ordered, so they parse
+        let d = parse_daterange(DateRangeAttrs {
+            start: "1914-01-01",
+            stop: "1914-01-01",
+            ..DateRangeAttrs::default()
+        })
+        .unwrap();
+        assert_eq!(d.stop, Some((1914, 1, 1)));
+    }
+
+    #[test]
+    fn compound_rejects_malformed_or_empty_endpoints() {
+        assert_eq!(
+            parse_daterange(DateRangeAttrs {
+                start: "garbage",
+                stop: "1918-01-01",
+                ..DateRangeAttrs::default()
+            })
+            .unwrap_err(),
+            DateError::InvalidVal("garbage".to_string())
+        );
+        assert_eq!(
+            parse_daterange(DateRangeAttrs {
+                start: "1914-13-01",
+                stop: "1918-01-01",
+                ..DateRangeAttrs::default()
+            })
+            .unwrap_err(),
+            DateError::InvalidMonth(13)
+        );
+        assert_eq!(
+            parse_datespan(DateRangeAttrs {
+                start: "",
+                stop: "1918-01-01",
+                ..DateRangeAttrs::default()
+            })
+            .unwrap_err(),
+            DateError::EmptyVal
+        );
+        // malformed optional attributes surface the dateval errors too
+        assert_eq!(
+            parse_daterange(DateRangeAttrs {
+                start: "1914-01-01",
+                stop: "1918-01-01",
+                cformat: Some("Mayan"),
+                ..DateRangeAttrs::default()
+            })
+            .unwrap_err(),
+            DateError::InvalidCalendar("Mayan".to_string())
+        );
+    }
+
+    #[test]
+    fn datestr_is_text_only() {
+        let d = parse_datestr("circa the harvest festival").unwrap();
+        assert_eq!(d.modifier, Modifier::TextOnly);
+        assert_eq!(d.ymd, (0, 0, 0));
+        assert_eq!(d.stop, None);
+        assert_eq!(d.year(), None);
+        assert!(!d.is_range());
+        assert_eq!(d.display, "circa the harvest festival");
+        assert_eq!(d.text(), Some("circa the harvest festival"));
+    }
+
+    #[test]
+    fn datestr_keeps_the_text_verbatim() {
+        let d = parse_datestr("  between the wars  ").unwrap();
+        assert_eq!(d.display, "  between the wars  ");
+        assert_eq!(d.text(), Some("  between the wars  "));
+    }
+
+    #[test]
+    fn datestr_rejects_only_the_empty_string() {
+        assert_eq!(parse_datestr(""), Err(DateError::EmptyVal));
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Every plain (Gregorian, Jan 1, unmodified) dateval round-trips
+        /// through its own display string: `parse(display(parse(val)))` equals
+        /// `parse(val)` (plan §11 property test).
+        #[test]
+        fn plain_datevals_round_trip_through_their_display_string(
+            year in -9999i32..=9999,
+            month in 0u32..=12,
+            day in 0u32..=31,
+        ) {
+            let val = format!("{:04}-{:02}-{:02}", year, month, day);
+            let d = parse(&val).unwrap();
+            prop_assert_eq!(d.display.as_str(), val.as_str());
+            let reparse = parse(d.display.as_str()).unwrap();
+            prop_assert_eq!(reparse, d);
+        }
     }
 }

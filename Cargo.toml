@@ -23,6 +23,8 @@ resolver = "3"
 # as milestones introduce them.
 [workspace.dependencies]
 thiserror = "2"
+# Civil-date math: pinned at milestone 4 (gramps-dates).
+jiff = "0.2"
 
 [workspace.package]
 version = "0.1.0"
