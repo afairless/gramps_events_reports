@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<!--
+  Fixture: the four date* element forms from the Gramps XML 1.7.x DTD
+  and their attribute surface — modifiers (none/before/after/about),
+  quality (estimated/calculated), partial dates (year-only, year-month),
+  BC dates (negative year), dual dating, new-year starts, the six
+  non-Gregorian cformat calendars, and the daterange / datespan /
+  datestr forms (full, month-only, and year-only endpoints).
+
+  Events D0000 and D0001 have people eventrefs so a realistic
+  event-ref shape is present; every other event is intentionally
+  unreferenced here (orphan-linkage fixtures live in families.gramps).
+-->
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-09-29" version="5.1.6"/>
+    <researcher>
+    </researcher>
+  </header>
+  <events>
+    <!-- dateval, exact -->
+    <event handle="_d0000" change="100" id="D0000">
+      <type>Birth</type>
+      <dateval val="2000-03-03"/>
+    </event>
+    <!-- dateval, modifier=before -->
+    <event handle="_d0001" change="101" id="D0001">
+      <type>Birth</type>
+      <dateval val="1914-06-28" type="before"/>
+    </event>
+    <!-- dateval, modifier=after -->
+    <event handle="_d0002" change="102" id="D0002">
+      <type>Birth</type>
+      <dateval val="1945-05-08" type="after"/>
+    </event>
+    <!-- dateval, modifier=about -->
+    <event handle="_d0003" change="103" id="D0003">
+      <type>Birth</type>
+      <dateval val="1900-01-01" type="about"/>
+    </event>
+    <!-- dateval, quality=estimated -->
+    <event handle="_d0004" change="104" id="D0004">
+      <type>Birth</type>
+      <dateval val="1918-11-11" quality="estimated"/>
+    </event>
+    <!-- dateval, quality=calculated + modifier=before -->
+    <event handle="_d0005" change="105" id="D0005">
+      <type>Birth</type>
+      <dateval val="1914-08-15" type="before" quality="calculated"/>
+    </event>
+    <!-- dateval, partial: year only -->
+    <event handle="_d0006" change="106" id="D0006">
+      <type>Birth</type>
+      <dateval val="1822"/>
+    </event>
+    <!-- dateval, partial: year + month -->
+    <event handle="_d0007" change="107" id="D0007">
+      <type>Birth</type>
+      <dateval val="1822-11"/>
+    </event>
+    <!-- dateval, BC (negative year) -->
+    <event handle="_d0008" change="108" id="D0008">
+      <type>Birth</type>
+      <dateval val="-0550-04-22"/>
+    </event>
+    <!-- dateval, dual dated -->
+    <event handle="_d0009" change="109" id="D0009">
+      <type>Birth</type>
+      <dateval val="1582-10-04" dualdated="1"/>
+    </event>
+    <!-- dateval, Julian calendar -->
+    <event handle="_d0010" change="110" id="D0010">
+      <type>Birth</type>
+      <dateval val="1700-02-18" cformat="Julian"/>
+    </event>
+    <!-- dateval, Hebrew calendar -->
+    <event handle="_d0011" change="111" id="D0011">
+      <type>Birth</type>
+      <dateval val="5720-01-02" cformat="Hebrew"/>
+    </event>
+    <!-- dateval, French Republican calendar -->
+    <event handle="_d0012" change="112" id="D0012">
+      <type>Birth</type>
+      <dateval val="0008-11-05" cformat="French Republican"/>
+    </event>
+    <!-- dateval, Persian calendar -->
+    <event handle="_d0013" change="113" id="D0013">
+      <type>Birth</type>
+      <dateval val="1379-07-01" cformat="Persian"/>
+    </event>
+    <!-- dateval, Islamic calendar -->
+    <event handle="_d0014" change="114" id="D0014">
+      <type>Birth</type>
+      <dateval val="1318-01-01" cformat="Islamic"/>
+    </event>
+    <!-- dateval, Swedish calendar -->
+    <event handle="_d0015" change="115" id="D0015">
+      <type>Birth</type>
+      <dateval val="1753-02-17" cformat="Swedish"/>
+    </event>
+    <!-- dateval, new-year start (old-style year begins 25 March) -->
+    <event handle="_d0016" change="116" id="D0016">
+      <type>Birth</type>
+      <dateval val="1580-03-26" newyear="Mar25"/>
+    </event>
+    <!-- daterange, full dates (unambiguous day endpoints) -->
+    <event handle="_d0017" change="117" id="D0017">
+      <type>Marriage</type>
+      <daterange start="1914-07-28" stop="1918-11-11"/>
+    </event>
+    <!-- daterange, month-only endpoints (Nov 1822 – Apr 1823) -->
+    <event handle="_d0018" change="118" id="D0018">
+      <type>Marriage</type>
+      <daterange start="1822-11" stop="1823-04"/>
+    </event>
+    <!-- daterange, year-only endpoints (1822–1824) -->
+    <event handle="_d0019" change="119" id="D0019">
+      <type>Marriage</type>
+      <daterange start="1822" stop="1824"/>
+    </event>
+    <!-- daterange, estimated quality -->
+    <event handle="_d0020" change="120" id="D0020">
+      <type>Marriage</type>
+      <daterange start="1801-01-01" stop="1811-12-31" quality="estimated"/>
+    </event>
+    <!-- datespan, full dates -->
+    <event handle="_d0021" change="121" id="D0021">
+      <type>Immigration</type>
+      <datespan start="1925-06-01" stop="1925-08-31"/>
+    </event>
+    <!-- datespan, month-only endpoints -->
+    <event handle="_d0022" change="122" id="D0022">
+      <type>Immigration</type>
+      <datespan start="1066-10" stop="1066-11"/>
+    </event>
+    <!-- datespan, calculated + dual dated -->
+    <event handle="_d0023" change="123" id="D0023">
+      <type>Immigration</type>
+      <datespan start="1850-01-01" stop="1850-06-30" quality="calculated" dualdated="1"/>
+    </event>
+    <!-- datestr, free text only -->
+    <event handle="_d0024" change="124" id="D0024">
+      <type>Graduation</type>
+      <datestr val="circa the harvest festival"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_dp000" change="200" id="I0000">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>Annalist</first>
+        <surname>Example</surname>
+      </name>
+      <eventref hlink="_d0000" role="Primary"/>
+    </person>
+    <person handle="_dp001" change="201" id="I0001">
+      <gender>F</gender>
+      <name type="Birth Name">
+        <first>Second</first>
+        <surname>Example</surname>
+      </name>
+      <eventref hlink="_d0001" role="Primary"/>
+    </person>
+  </people>
+</database>

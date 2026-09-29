@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<!--
+  Fixture: privacy flags and forward-compatibility.
+
+   - priv="1" on a person and on an event (records excluded by default,
+     shown flagged when the include-private option is set).
+   - Hostile-but-well-formed text content (markup-like names, entities)
+     to lock in safe escaping when the views render.
+   - Unknown top-level sections, unknown per-record elements, and unknown
+     attributes (forward compat): the parser must tolerate and skip them.
+   - An unversioned header (no `version` attribute on `created`) — old
+     or foreign exports should still parse.
+-->
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <!-- unversioned: no `version` attribute on `created` -->
+    <created date="2026-09-29"/>
+    <!-- unknown element inside a tolerated section -->
+    <telepathy-settings enabled="0"/>
+  </header>
+  <events>
+    <!-- private event -->
+    <event handle="_e0000" change="500" id="E0000" priv="1">
+      <type>Birth</type>
+      <dateval val="1922-02-22"/>
+    </event>
+    <!-- public event carrying an unknown attribute -->
+    <event handle="_e0001" change="501" id="E0001" future_attr="future-value">
+      <type>Birth</type>
+      <dateval val="1933-03-03"/>
+    </event>
+  </events>
+  <people>
+    <!-- private person -->
+    <person handle="_ep000" change="600" id="I0000" priv="1">
+      <gender>F</gender>
+      <name type="Birth Name">
+        <first>Ava &lt;script&gt;alert("gotcha")&lt;/script&gt;</first>
+        <surname>Pryvat &amp; Sons</surname>
+      </name>
+      <eventref hlink="_e0000" role="Primary"/>
+      <!-- unknown per-record element: tolerated -->
+      <favorite-meme>spinning cat</favorite-meme>
+    </person>
+    <person handle="_ep001" change="601" id="I0001">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>Plain</first>
+        <surname>Person</surname>
+      </name>
+      <eventref hlink="_e0001" role="Primary"/>
+    </person>
+  </people>
+  <!-- unknown top-level section: forward compat, must be skipped -->
+  <future-section>
+    <marker>ignore me</marker>
+  </future-section>
+</database>

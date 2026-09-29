@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<!--
+  Fixture: event-to-subject linkage shapes.
+
+   - E0000/E0001/E0002 hang off family F0000 (Marriage,
+     Marriage-Alternative, Divorce) with role="Family" eventrefs —
+     couple-subject resolution is exercised, and the later divorce
+     must NOT suppress the marriage (decision D5).
+   - E0003 is referenced by two people in the same role="Primary" —
+     the (event, subject) dedup case.
+   - E0004 is referenced twice by one person, roles Primary + Witness —
+     the multi-role-per-person case.
+   - E0005 is referenced only by a role="Witness" eventref — the
+     any-role fallback case.
+   - E0006/E0007 are referenced by nobody: orphan events.
+-->
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-09-29" version="5.1.6"/>
+    <researcher>
+    </researcher>
+  </header>
+  <events>
+    <!-- marriage, owned by F0000 -->
+    <event handle="_f0000" change="300" id="E0000">
+      <type>Marriage</type>
+      <dateval val="1955-06-12"/>
+    </event>
+    <!-- marriage-alternative for the same couple -->
+    <event handle="_f0001" change="301" id="E0001">
+      <type>Marriage-Alternative</type>
+      <dateval val="1955-09-03"/>
+    </event>
+    <!-- divorce; must not suppress E0000 (D5) -->
+    <event handle="_f0002" change="302" id="E0002">
+      <type>Divorce</type>
+      <dateval val="1978-01-30"/>
+    </event>
+    <!-- same event, two Primary eventrefs: dedup case -->
+    <event handle="_f0003" change="303" id="E0003">
+      <type>Graduation</type>
+      <daterange start="1990-05-01" stop="1990-05-15"/>
+    </event>
+    <!-- same person holds two roles on this event -->
+    <event handle="_f0004" change="304" id="E0004">
+      <type>Ordination</type>
+      <dateval val="1920-06-19"/>
+    </event>
+    <!-- referenced only by a non-Primary role -->
+    <event handle="_f0005" change="305" id="E0005">
+      <type>Baptism</type>
+      <dateval val="1890-04-01"/>
+    </event>
+    <!-- orphan: dated -->
+    <event handle="_f0006" change="306" id="E0006">
+      <type>Immigration</type>
+      <daterange start="1901-01-01" stop="1901-12-31"/>
+    </event>
+    <!-- orphan: text-only -->
+    <event handle="_f0007" change="307" id="E0007">
+      <type>Custom Type</type>
+      <datestr val="unknown date"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_fp000" change="400" id="I0000">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>Adam</first>
+        <surname>Uplands</surname>
+      </name>
+      <parentin hlink="_f0000"/>
+      <eventref hlink="_f0003" role="Primary"/>
+      <eventref hlink="_f0004" role="Primary"/>
+      <eventref hlink="_f0005" role="Witness"/>
+    </person>
+    <person handle="_fp001" change="401" id="I0001">
+      <gender>F</gender>
+      <name type="Birth Name">
+        <first>Eve</first>
+        <surname>Uplands</surname>
+      </name>
+      <parentin hlink="_f0000"/>
+      <eventref hlink="_f0003" role="Primary"/>
+      <eventref hlink="_f0004" role="Witness"/>
+    </person>
+    <person handle="_fp002" change="402" id="I0002">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>Cain</first>
+        <surname>Uplands</surname>
+      </name>
+      <childof hlink="_f0000"/>
+    </person>
+  </people>
+  <families>
+    <family handle="_f0000" change="403" id="F0000">
+      <rel type="Marriage"/>
+      <father hlink="_fp000"/>
+      <mother hlink="_fp001"/>
+      <childref hlink="_fp002"/>
+      <eventref hlink="_f0000" role="Family"/>
+      <eventref hlink="_f0001" role="Family"/>
+      <eventref hlink="_f0002" role="Family"/>
+    </family>
+  </families>
+</database>

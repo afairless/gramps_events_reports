@@ -1,0 +1,4 @@
+# Rustfmt configuration — applied workspace-wide via `cargo fmt`.
+edition = "2024"
+max_width = 100
+newline_style = "unix"

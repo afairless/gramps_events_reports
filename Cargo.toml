@@ -1,0 +1,25 @@
+# Gramps Events Report — Cargo workspace.
+#
+# One binary ships the CLI and the `serve` subcommand (the `web` UI);
+# the crates are strictly layered as ingestion → transformation → output:
+#
+#   gramps-dates ──▶ gramps-xml ──▶ event-core ──▶ writers / web / cli
+#
+# Shared dependency versions are pinned here in [workspace.dependencies]
+# as milestones introduce them.
+
+[workspace]
+members = [
+    "crates/gramps-xml",
+    "crates/gramps-dates",
+    "crates/event-core",
+    "crates/writers",
+    "crates/cli",
+    "crates/web",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
