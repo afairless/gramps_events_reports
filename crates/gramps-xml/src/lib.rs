@@ -128,16 +128,36 @@ pub fn decode_container(bytes: &[u8]) -> Result<String, GrampsXmlError> {
     String::from_utf8(xml).map_err(|_| GrampsXmlError::InvalidUtf8)
 }
 
-/// Render the leading bytes of an unrecognized input for error messages —
-/// printable ASCII is shown verbatim, everything else is dotted.
-fn preview(bytes: &[u8]) -> String {
-    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(16)]);
-    if bytes.len() > 16 {
-        format!("{head:?}…")
-    } else {
-        format!("{head:?}")
+/// Render the leading bytes of an unrecognized input for error messages.
+///
+/// Printable ASCII is shown verbatim, every other byte as a `\\xNN` hex
+/// escape, capped at [`PREVIEW_BYTES`] with an ellipsis, and wrapped in
+/// quotes so control characters and spaces cannot swallow the surrounding
+/// message text. The result is always valid UTF-8 and reads the same in a
+/// terminal or a JSON error body.
+pub fn preview(bytes: &[u8]) -> String {
+    fn hex(b: u8) -> String {
+        format!("\\x{b:02x}")
     }
+    let mut out = Vec::with_capacity(bytes.len().min(PREVIEW_BYTES) + 2);
+    out.push(b'\"');
+    for (i, b) in bytes.iter().copied().enumerate() {
+        if i == PREVIEW_BYTES {
+            out.extend_from_slice("…".as_bytes());
+            break;
+        }
+        if (0x20..=0x7e).contains(&b) && b != b'\"' {
+            out.push(b);
+        } else {
+            out.extend_from_slice(hex(b).as_bytes());
+        }
+    }
+    out.push(b'\"');
+    String::from_utf8(out).unwrap_or_default()
 }
+
+/// How many leading bytes [`preview`] renders before the ellipsis.
+pub const PREVIEW_BYTES: usize = 16;
 
 #[cfg(test)]
 mod tests {
@@ -146,16 +166,127 @@ mod tests {
     use flate2::Compression;
     use zip::write::SimpleFileOptions;
 
-    use super::{Container, decode_container, detect_container, parse_database};
+    use super::{
+        Container, PREVIEW_BYTES, decode_container, detect_container, parse_database, preview,
+    };
     use crate::GrampsXmlError;
 
-    /// Real fixtures committed at the repository root (step 1). `include_bytes!`
-    /// bakes them in at compile time, so the tests run from any cwd.
+    /// Real fixtures committed at the repository root (steps 1 and 15).
+    /// `include_bytes!` bakes them in at compile time, so the tests run
+    /// from any cwd.
     const DATA_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/data.gramps");
     const GZIP_CONTAINER: &[u8] =
         include_bytes!("../../../tests/fixtures/containers/data.gramps.gz");
     const ZIP_CONTAINER: &[u8] =
         include_bytes!("../../../tests/fixtures/containers/tree.gramps.zip");
+    const EMPTY_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/empty.gramps");
+    const GARBAGE_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/garbage.gramps");
+    const TRUNCATED_GZ_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/containers/truncated.gramps.gz");
+    const ZIP_NO_DATA_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/containers/zip-no-data.gramps.zip");
+    const EMPTY_DB_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/empty-database.gramps");
+    const WARNINGS_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/warnings.gramps");
+
+    /// The hardening empty/error fixture sweep (plan §12 step 14 and §11.1
+    /// acceptance 1): corrupt containers must raise a decode error that
+    /// says *what* was wrong, so a failure is diagnosable from the message
+    /// alone — no guessing which stage rejected the file.
+    #[test]
+    fn committed_empty_fixture_is_rejected() {
+        assert!(matches!(
+            parse_database(EMPTY_FIXTURE),
+            Err(GrampsXmlError::EmptyInput)
+        ));
+        assert!(
+            parse_database(EMPTY_FIXTURE)
+                .unwrap_err()
+                .to_string()
+                .contains("empty input")
+        );
+    }
+
+    #[test]
+    fn committed_garbage_fixture_yields_an_unknown_container() {
+        let err = parse_database(GARBAGE_FIXTURE).unwrap_err();
+        assert!(matches!(err, GrampsXmlError::UnknownContainer { .. }));
+        let msg = err.to_string();
+        // Printable ASCII is shown verbatim, so the message names the file's
+        // own first line ...
+        assert!(msg.contains("This is not a Gr"), "message: {msg}");
+        // ... wrapped in quotes and capped with an ellipsis past
+        // PREVIEW_BYTES: the whole preview stays on one line, so the message
+        // remains a single diagnosable string in a terminal or a JSON body.
+        assert!(msg.contains('"'), "message is self-quoting: {msg}");
+        assert!(msg.contains('…'), "message is capped: {msg}");
+        assert!(!msg.contains('\n'), "message stays single-line: {msg}");
+    }
+
+    #[test]
+    fn committed_truncated_gzip_fixture_raises_a_decode_error() {
+        assert!(matches!(
+            parse_database(TRUNCATED_GZ_FIXTURE),
+            Err(GrampsXmlError::GzipDecode(_))
+        ));
+    }
+
+    #[test]
+    fn committed_zip_without_data_gramps_is_rejected() {
+        let err = parse_database(ZIP_NO_DATA_FIXTURE).unwrap_err();
+        assert!(matches!(err, GrampsXmlError::ZipMissingMember(_)));
+        assert!(err.to_string().contains("other.txt"), "message: {err}");
+    }
+
+    /// A well-formed database with an empty body is *not* an error: the
+    /// CLI and web UI must render "0 events" rather than refuse the file
+    /// (fixture README, empty/error sweep).
+    #[test]
+    fn committed_empty_database_fixture_parses_to_zero_records() {
+        let db = parse_database(EMPTY_DB_FIXTURE).unwrap();
+        assert_eq!(db.events.len(), 0);
+        assert_eq!(db.people.len(), 0);
+        assert_eq!(db.families.len(), 0);
+        assert_eq!(db.places.len(), 0);
+        assert!(db.warnings.is_empty(), "warnings: {:?}", db.warnings);
+        assert_eq!(db.header.version.as_deref(), Some("5.1.6"));
+    }
+
+    /// The recoverable-defect contract (plan §7.1): malformed *soft* fields
+    /// warn and skip the record, never abort the whole parse, so the rest
+    /// of a damaged-but-valuable file stays readable.
+    #[test]
+    fn committed_warnings_fixture_keeps_good_records_and_lists_defects() {
+        let db = parse_database(WARNINGS_FIXTURE).unwrap();
+        // The good records survive: 1 tag (the broken one is skipped), 1
+        // event, 1 person (the bad-gender person is skipped with a
+        // warning, not kept under a default).
+        assert_eq!(db.tags.len(), 1);
+        assert_eq!(db.events.len(), 1);
+        assert_eq!(db.people.len(), 1);
+        assert_eq!(db.people[0].gramps_id.as_deref(), Some("P0000"));
+        // Exactly the two defects are reported, each naming what was wrong.
+        assert_eq!(db.warnings.len(), 2);
+        let all = db.warnings.join("\n");
+        assert!(all.contains("priority"), "warnings: {all}");
+        assert!(all.contains("gender"), "warnings: {all}");
+    }
+
+    /// [`preview`] keeps error messages single-line and self-quoting:
+    /// printable ASCII verbatim, everything else hex-escaped, ends with an
+    /// ellipsis past [`PREVIEW_BYTES`].
+    #[test]
+    fn preview_escapes_non_printables_and_stays_single_line() {
+        assert_eq!(preview(b"MZ\x90\x00\x03\x00"), "\"MZ\\x90\\x00\\x03\\x00\"");
+        assert_eq!(preview(b"plain text"), "\"plain text\"");
+        // Quotes are hex-escaped so an embedded quote cannot swallow the
+        // wrapping quotes and break out of the single-line message.
+        assert_eq!(preview(b"say \"hi\""), "\"say \\x22hi\\x22\"");
+        // Long inputs are capped with an ellipsis, not dumped in full.
+        let long = [b'a'].repeat(PREVIEW_BYTES + 20);
+        let shown = preview(&long);
+        assert!(shown.contains("…"), "capped preview: {shown}");
+        assert!(shown.len() < long.len() + 8);
+    }
 
     #[test]
     fn detects_all_three_containers_from_magic() {

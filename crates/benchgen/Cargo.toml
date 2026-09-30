@@ -1,0 +1,15 @@
+[package]
+name = "benchgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Deterministic generator for the ~100k-event large-file benchmark fixture"
+
+[dependencies]
+
+[dev-dependencies]
+# The generator's own test asserts the emitted document parses cleanly
+# through the real pipeline (plan §11: the large-file smoke fixture must
+# actually be consumable, not just well-formed by construction).
+gramps-xml = { path = "../gramps-xml" }

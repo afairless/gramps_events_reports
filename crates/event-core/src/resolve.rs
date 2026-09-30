@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use gramps_xml::model::{Database, Event, EventRef, Family, Person, PersonName, Place, Surname};
+use gramps_xml::model::{Database, Event, Family, Person, PersonName, Place, Surname};
 
 use crate::model::{PersonDisplay, ResolvedEvent};
 use crate::options::ReportOptions;
@@ -43,13 +43,62 @@ const PRIMARY_ROLE: &str = "Primary";
 const ORPHAN_NAME: &str = "—";
 
 /// A `handle → record` index over the primary record kinds resolution
-/// consults: events, people, families and places.
+/// consults: events, people, families and places, plus the *inverse*
+/// eventref index (event → referencing people/families) that makes subject
+/// resolution O(refs) per event instead of O(people + families) per event.
+///
+/// The inverse maps are an implementation detail of resolution, built
+/// once by [`build_index`] — do not construct a [`HandleIndex`] by hand.
 #[derive(Debug, Clone)]
 pub struct HandleIndex {
     pub events: HashMap<String, Event>,
     pub people: HashMap<String, Person>,
     pub families: HashMap<String, Family>,
     pub places: HashMap<String, Place>,
+    /// event handle → (person handle, *best* role) — the inverse of
+    /// `people[].event_refs`. Per person per event at most one entry: the
+    /// first ref, upgraded to `Primary` when a later ref holds that role
+    /// (the plan §8.6 a/b split depends on the person's best ref).
+    event_people: HashMap<String, Vec<(String, String)>>,
+    /// event handle → (family handle, role) — the inverse of
+    /// `families[].event_refs`; one entry per family per event, the
+    /// family's first ref (plan §8.6 c, the plan §7.1 EventRef role).
+    event_families: HashMap<String, Vec<(String, String)>>,
+}
+
+/// Record each of `person`'s eventrefs in the inverse index. A person
+/// referencing the same event more than once contributes one entry — the
+/// first ref, upgraded to `Primary` when a later ref to the same event
+/// holds that role — mirroring the previous linear scan's "prefer Primary,
+/// else first" rule for a person's best ref, so the (a)/(b) resolution
+/// split is independent of eventref document order.
+fn push_person_refs(out: &mut HashMap<String, Vec<(String, String)>>, person: &Person) {
+    for ev_ref in &person.event_refs {
+        let list = out.entry(ev_ref.event_handle.clone()).or_default();
+        match list.iter_mut().find(|(handle, _)| handle == &person.handle) {
+            Some((_, role))
+                if role.as_str() != PRIMARY_ROLE && ev_ref.role.as_str() == PRIMARY_ROLE =>
+            {
+                role.clear();
+                role.push_str(PRIMARY_ROLE);
+            }
+            Some(_) => {}
+            None => list.push((person.handle.clone(), ev_ref.role.clone())),
+        }
+    }
+}
+
+/// Record each of `family`'s eventrefs in the inverse index — one entry
+/// per family per event, the family's *first* ref (a family lists its own
+/// marriage before any divorce, so the first ref carries the meaningful
+/// role). Families are iterated in document order.
+fn push_family_refs(out: &mut HashMap<String, Vec<(String, String)>>, family: &Family) {
+    for ev_ref in &family.event_refs {
+        let list = out.entry(ev_ref.event_handle.clone()).or_default();
+        if !list.iter().any(|(handle, _)| handle == &family.handle) {
+            list.push((family.handle.clone(), ev_ref.role.clone()));
+        }
+    }
 }
 
 impl HandleIndex {
@@ -81,6 +130,8 @@ pub fn build_index(db: &Database) -> HandleIndex {
         people: HashMap::new(),
         families: HashMap::new(),
         places: HashMap::new(),
+        event_people: HashMap::new(),
+        event_families: HashMap::new(),
     };
     for event in &db.events {
         index.events.insert(event.handle.clone(), event.clone());
@@ -93,6 +144,16 @@ pub fn build_index(db: &Database) -> HandleIndex {
     }
     for place in &db.places {
         index.places.insert(place.handle.clone(), place.clone());
+    }
+    // Invert the eventrefs. `db.people` / `db.families` are iterated in
+    // document order, so each event's referencing list keeps exactly the
+    // order a full `db.people.iter().filter(...)` scan per event produced
+    // — resolution output is unchanged, only the lookup cost is.
+    for person in &db.people {
+        push_person_refs(&mut index.event_people, person);
+    }
+    for family in &db.families {
+        push_family_refs(&mut index.event_families, family);
     }
     index
 }
@@ -109,7 +170,7 @@ pub fn collect_events(db: &Database, opts: &ReportOptions) -> Vec<ResolvedEvent>
     let index = build_index(db);
     let mut out = Vec::new();
     for event in &db.events {
-        let mut resolved = resolve_event(event, db, &index);
+        let mut resolved = resolve_event(event, &index);
         derive(&mut resolved, &index, opts);
         if passes(&resolved, &index, opts) {
             out.push(resolved);
@@ -128,8 +189,8 @@ struct Resolution {
 /// Resolve one event to its subjects, place path and flags — the derived
 /// fields are placeholder values here and are overwritten by
 /// [`crate::pipeline::derive`] in [`collect_events`].
-fn resolve_event(event: &Event, db: &Database, index: &HandleIndex) -> ResolvedEvent {
-    let resolution = resolve_subjects(event, db, index);
+fn resolve_event(event: &Event, index: &HandleIndex) -> ResolvedEvent {
+    let resolution = resolve_subjects(event, index);
     let date = event.date.as_ref();
     ResolvedEvent {
         event_type: event.event_type.clone(),
@@ -148,32 +209,51 @@ fn resolve_event(event: &Event, db: &Database, index: &HandleIndex) -> ResolvedE
     }
 }
 
-/// Apply the subject-resolution precedence order (plan §8.6 a–e).
-fn resolve_subjects(event: &Event, db: &Database, index: &HandleIndex) -> Resolution {
-    // (a) Primary-role eventrefs on people.
-    let referencing_people = person_refs_for(&event.handle, db);
-    let primary = referencing_people
+/// Apply the subject-resolution precedence order (plan §8.6 a–e). Subject
+/// lookup goes through the inverse eventref index, so the cost is O(refs)
+/// per event, not a full `db.people`/`db.families` scan per event (plan
+/// §7.3 — resolution output is identical either way).
+fn resolve_subjects(event: &Event, index: &HandleIndex) -> Resolution {
+    // (a) Primary-role eventrefs on people. Each referencing person holds
+    // their *best* ref in the inverse index (`Primary` preferred), so this
+    // branch is independent of eventref document order.
+    let people_refs = index.event_people.get(&event.handle);
+    let primary = people_refs
         .iter()
-        .filter(|entry| entry.1.role.as_str() == PRIMARY_ROLE)
+        .flat_map(|list| {
+            list.iter()
+                .filter(|(_, role)| role.as_str() == PRIMARY_ROLE)
+        })
         .collect::<Vec<_>>();
     if !primary.is_empty() {
         return Resolution {
             subjects: dedup_people(
                 primary
                     .iter()
-                    .map(|entry| display_person(entry.0, PRIMARY_ROLE))
+                    .filter_map(|(handle, _)| {
+                        index
+                            .person(handle)
+                            .map(|person| display_person(person, PRIMARY_ROLE))
+                    })
                     .collect::<Vec<_>>(),
             ),
             role: PRIMARY_ROLE.to_string(),
             orphan: false,
         };
     }
-    // (b) otherwise any eventref'd person.
-    if !referencing_people.is_empty() {
+    // (b) otherwise any eventref'd person. The inverse index lists people
+    // in `db.people` document order, so the first subject and its role are
+    // unchanged from the former db-wide scan.
+    if let Some(list) = people_refs
+        && !list.is_empty()
+    {
         let subjects = dedup_people(
-            referencing_people
-                .iter()
-                .map(|entry| display_person(entry.0, entry.1.role.as_str()))
+            list.iter()
+                .filter_map(|(handle, role)| {
+                    index
+                        .person(handle)
+                        .map(|person| display_person(person, role.as_str()))
+                })
                 .collect::<Vec<_>>(),
         );
         let role = subjects[0].role.clone();
@@ -185,27 +265,32 @@ fn resolve_subjects(event: &Event, db: &Database, index: &HandleIndex) -> Resolu
     }
     // (c) family events → the couple; a family linking a single spouse (d)
     // yields that one subject — never an empty set.
-    let family_refs = family_refs_for(&event.handle, db);
+    let family_refs: Vec<&(String, String)> = index
+        .event_families
+        .get(&event.handle)
+        .map(|list| list.iter().collect())
+        .unwrap_or_default();
     if !family_refs.is_empty() {
-        let role = family_refs[0].1.role.clone();
+        let role = family_refs[0].1.clone();
         let mut subjects = Vec::new();
         let mut seen = HashSet::new();
-        for (family, ev_ref) in family_refs {
-            let spouse_role = ev_ref.role.as_str();
-            push_spouse(
-                &mut subjects,
-                &mut seen,
-                index,
-                family.father.clone(),
-                spouse_role,
-            );
-            push_spouse(
-                &mut subjects,
-                &mut seen,
-                index,
-                family.mother.clone(),
-                spouse_role,
-            );
+        for (family_handle, spouse_role) in family_refs {
+            if let Some(family) = index.family(family_handle) {
+                push_spouse(
+                    &mut subjects,
+                    &mut seen,
+                    index,
+                    family.father.clone(),
+                    spouse_role,
+                );
+                push_spouse(
+                    &mut subjects,
+                    &mut seen,
+                    index,
+                    family.mother.clone(),
+                    spouse_role,
+                );
+            }
         }
         return Resolution {
             subjects,
@@ -223,52 +308,6 @@ fn resolve_subjects(event: &Event, db: &Database, index: &HandleIndex) -> Resolu
         }],
         role: String::new(),
         orphan: true,
-    }
-}
-
-/// The people referencing `event_handle`, each with their *best* eventref
-/// to it — a `Primary`-role ref when they hold one, else their first ref.
-/// Preferring `Primary` keeps the (a)/(b) split independent of eventref
-/// document order.
-fn person_refs_for<'a>(event_handle: &'a str, db: &'a Database) -> Vec<(&'a Person, &'a EventRef)> {
-    db.people
-        .iter()
-        .filter_map(|person| best_ref(person, event_handle).map(|ev_ref| (person, ev_ref)))
-        .collect::<Vec<_>>()
-}
-
-/// The families referencing `event_handle`, each with their first eventref
-/// to it.
-fn family_refs_for<'a>(event_handle: &'a str, db: &'a Database) -> Vec<(&'a Family, &'a EventRef)> {
-    db.families
-        .iter()
-        .filter_map(|family| {
-            family
-                .event_refs
-                .iter()
-                .find(|ev_ref| ev_ref.event_handle == event_handle)
-                .map(|ev_ref| (family, ev_ref))
-        })
-        .collect::<Vec<_>>()
-}
-
-/// A person's best eventref to `event_handle`, or `None` when they hold no
-/// ref to it.
-fn best_ref<'a>(person: &'a Person, event_handle: &'a str) -> Option<&'a EventRef> {
-    match person
-        .event_refs
-        .iter()
-        .find(|ev_ref| ev_ref.event_handle == event_handle)
-    {
-        None => None,
-        Some(first) => match person
-            .event_refs
-            .iter()
-            .find(|ev_ref| ev_ref.event_handle == event_handle && ev_ref.role == PRIMARY_ROLE)
-        {
-            Some(primary) => Some(primary),
-            None => Some(first),
-        },
     }
 }
 
@@ -718,5 +757,47 @@ mod tests {
             .find(|p| p.handle.as_str() == "_nameless")
             .unwrap();
         assert_eq!(render_person_name(nameless), "");
+    }
+
+    /// The inverse eventref index is what subject resolution consults — a
+    /// regression guard for the index-building itself (milestone 15
+    /// hardening; plan §7.3/§8.6). Resolution output is unchanged from the
+    /// former db-wide scans, so these assertions document the contract:
+    /// one entry per person per event holding the *best* role, one entry
+    /// per family per event (first ref), and `db.people`/`db.families`
+    /// document order preserved inside each event's list.
+    #[test]
+    fn inverse_index_records_best_person_role_and_first_family_ref() {
+        let db = parse_database(RESOLUTION_XML).unwrap();
+        let index = build_index(&db);
+
+        // A person holding Primary + Witness refs to the same event
+        // contributes one entry whose role is the *best* one (Primary) —
+        // the (a)/(b) split must not depend on eventref document order.
+        let e0 = &index.event_people["_e0"];
+        assert_eq!(e0.len(), 1);
+        assert_eq!(e0[0].0, "_solo");
+        assert_eq!(e0[0].1, PRIMARY_ROLE);
+
+        // People are listed in `db.people` document order per event.
+        let e3 = &index.event_people["_e3"];
+        assert_eq!(e3.len(), 1);
+        assert_eq!(e3[0].0, "_nameless");
+        assert_eq!(e3[0].1, PRIMARY_ROLE);
+
+        // Family refs: first family ref per event; multiple families in
+        // `db.families` document order (the single-spouse path).
+        let e1 = &index.event_families["_e1"];
+        assert_eq!(e1.len(), 1);
+        assert_eq!(e1[0].0, "_fam0");
+        assert_eq!(e1[0].1, "Family");
+        let e2 = &index.event_families["_e2"];
+        assert_eq!(e2.len(), 2);
+        assert_eq!(e2[0].0, "_fam1");
+        assert_eq!(e2[1].0, "_fam2");
+
+        // An orphan event has no inverse entries at all.
+        assert!(!index.event_people.contains_key("_e4"));
+        assert!(!index.event_families.contains_key("_e4"));
     }
 }

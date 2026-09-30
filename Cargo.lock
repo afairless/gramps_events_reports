@@ -525,6 +525,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "benchgen"
+version = "0.1.0"
+dependencies = [
+ "gramps-xml",
+]
+
+[[package]]
 name = "biblatex"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,6 +778,7 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "benchgen",
  "clap",
  "event-core",
  "gramps-xml",

@@ -16,6 +16,7 @@ members = [
     "crates/writers",
     "crates/cli",
     "crates/web",
+    "crates/benchgen",
 ]
 resolver = "3"
 

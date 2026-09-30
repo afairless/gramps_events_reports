@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<!--
+  Fixture: a well-formed Gramps database with zero records.
+
+  Every section the v1 pipeline consumes is absent or empty (header only),
+  so the parser must succeed and produce an empty `Database` — the CLI and
+  the web UI then report "0 events" instead of erroring.
+-->
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-09-29" version="5.1.6"/>
+    <researcher>
+    </researcher>
+  </header>
+</database>

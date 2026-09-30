@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+# The one shipped artifact is the `gramps-events` binary (plan §4/§6.5 —
+# CLI and web UI live in the same binary); the library crate keeps the
+# package name `cli` so `use cli::…` tests stay stable.
+[[bin]]
+name = "gramps-events"
+path = "src/main.rs"
+
 [dependencies]
 # The command-line surface (plan §6.5): derive macro for subcommands and
 # argument parsing.
@@ -28,3 +35,6 @@ jiff = { workspace = true }
 [dev-dependencies]
 # Isolated directories for `report` output in unit/snapshot tests.
 tempfile = "3"
+# The large-file benchmark (step 14) generates its ~100k-event fixture
+# on demand via the benchgen crate instead of committing multi-MB XML.
+benchgen = { path = "../benchgen" }

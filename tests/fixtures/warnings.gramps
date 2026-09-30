@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<!--
+  Fixture: recoverable record defects (the "warn and skip" contract, plan
+  §7.1). The parser must keep every well-formed record and append one
+  warning per skipped defect, so the rest of the document stays readable:
+
+   - a <tag> whose numeric `priority` attribute is not an integer
+     → "skipping tag _t1: malformed priority attribute";
+   - a <person> whose <gender> is neither M/F/U
+     → "skipping person P0001: malformed gender ...".
+
+  Everything else in this file is well-formed and must parse normally:
+  1 tag, 1 event (Birth, dated), 1 person referencing it.
+-->
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-09-29" version="5.1.6"/>
+  </header>
+  <tags>
+    <tag handle="_t0" change="100" priority="0" name="Bookmark" color="#000000"/>
+    <tag handle="_t1" change="100" priority="oops" name="Broken"/>
+  </tags>
+  <events>
+    <event handle="_e0" change="500" id="E0000">
+      <type>Birth</type>
+      <dateval val="1950-01-15"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_p0" change="600" id="P0000">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>Ada</first>
+        <surname>Lovelace</surname>
+      </name>
+      <eventref hlink="_e0" role="Primary"/>
+    </person>
+    <person handle="_p1" change="601" id="P0001">
+      <gender>Neither</gender>
+    </person>
+  </people>
+</database>
