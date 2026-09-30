@@ -3,3 +3,23 @@ name = "cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+# The command-line surface (plan §6.5): derive macro for subcommands and
+# argument parsing.
+clap = { version = "4", features = ["derive"] }
+# The CLI is the facade over the layered crates, so the best-effort error
+# type (anyhow) is the right choice here — parse and I/O failures read as
+# plain messages (plan §6.5).
+anyhow = "1"
+
+# The layered crates this binary drives: parse → core → writers.
+gramps-xml = { path = "../gramps-xml" }
+event-core = { path = "../event-core" }
+writers = { path = "../writers" }
+# Civil-date parsing for `--date-range START..END` (jiff::civil::Date).
+jiff = { workspace = true }
+
+[dev-dependencies]
+# Isolated directories for `report` output in unit/snapshot tests.
+tempfile = "3"

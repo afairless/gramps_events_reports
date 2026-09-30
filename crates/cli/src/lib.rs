@@ -1,8 +1,22 @@
 //! cli — the `gramps-events` command-line front-end.
 //!
-//! clap-based subcommands `report`, `list`, `inspect`, and `serve` share
-//! the event-core pipeline and writers. Scaffolded in milestone 1; the
-//! commands ship in later milestones.
+//! clap-based subcommands `inspect`, `list` and `report` drive the
+//! event-core pipeline and the writers crate (plan §6.5). The binary
+//! (`main.rs`) only parses arguments and streams bytes/text; all the logic
+//! lives here in the library so it is unit- and snapshot-testable:
+//!
+//! - [`args`] — the clap derive surface and the conversions from CLI
+//!   values to the shared `ReportOptions` / `Formats` / `ViewKind` types;
+//! - [`run`] — the three commands (`inspect` / `list` / `report`) over a
+//!   parsed [`gramps_xml::Database`];
+//! - [`render`] — the human-readable text rendering of any of the four
+//!   views the `list` subcommand prints.
+//!
+//! The scaffolded `serve` subcommand (the web UI) is wired by milestone 13.
+
+pub mod args;
+pub mod render;
+pub mod run;
 
 /// Canonical crate name — smoke tests (and later workspace integration
 /// tests) use this to assert crate linkage.
