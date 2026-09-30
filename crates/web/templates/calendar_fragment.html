@@ -1,0 +1,29 @@
+<section id="events" class="view-calendar">
+  <h2>Anniversary calendar</h2>
+  {% if months.is_empty() %}
+    <p class="hint">No events match the current options.</p>
+  {% else %}
+    {% for m in months %}
+      <section class="month">
+        <h3>{{ m.name }}</h3>
+        <table class="calendar">
+          <tbody>
+            {% for d in m.days %}
+              <tr>
+                <th scope="row">{{ d.day }}</th>
+                <td>
+                  <ul class="entries">
+                    {% for e in d.entries %}
+                      <li class="{% if e.is_range %}range{% endif %}">{{ e.line }}</li>
+                    {% endfor %}
+                  </ul>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endfor %}
+  {% endif %}
+  <p class="hint">Reference year: {{ reference_year }} — every entry repeats each year on its anchor (month, day); ranges anchor at their start with the full range text shown.</p>
+</section>

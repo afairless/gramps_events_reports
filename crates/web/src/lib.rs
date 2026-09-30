@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post};
+use axum::routing::{MethodFilter, get, post};
 
 use crate::state::AppState;
 
@@ -83,12 +83,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/load",
             post(handlers::load).layer(DefaultBodyLimit::max(UPLOAD_CAP_BYTES)),
         )
-        .route("/api/options", get(handlers::options))
+        .route(
+            "/api/options",
+            get(handlers::options).on(MethodFilter::PUT, handlers::save_options),
+        )
         .route("/api/events", get(handlers::events))
         .route("/api/events.json", get(handlers::events_json))
         .route("/api/export", get(handlers::export))
         .route("/api/reset", post(handlers::reset))
         .route("/static/htmx.min.js", get(handlers::htmx))
+        .route("/static/style.css", get(handlers::style))
         .with_state(state)
 }
 

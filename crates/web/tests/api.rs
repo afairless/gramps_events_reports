@@ -1,16 +1,19 @@
-//! Integration tests for the web API + skeleton UI (plan §11 web tests,
-//! milestone 13): the router is driven exactly as an HTTP client would
-//! be — Tower `ServiceExt::oneshot` — plus one real-listener test that
-//! proves the server answers over loopback TCP.
+//! Integration tests for the web API and the full four-view UI (plan §11
+//! web tests, milestone 13 + 14): the router is driven exactly as an HTTP
+//! client would be — Tower `ServiceExt::oneshot` — plus one real-listener
+//! test that proves the server answers over loopback TCP.
 //!
 //! Coverage: landing page + vendored htmx; the load lifecycle (JSON and
 //! HTMX responses, the 200 MB cap → 413, generated temp names, parse
 //! failures, reset cleanup); options/events/events.json/export routes;
-//! the not-loaded 409s; the unsupported-view 400 of this milestone's
-//! scope; and the escaping regression — hostile `<script>`-bearing
-//! names/types/dates render `&lt;script&gt;`-escaped in the view
-//! fragment (plan §11: "an escaping test asserts that `<script>`-bearing
-//! names/dates render escaped in every view fragment").
+//! the milestone-14 four-view UI (all four view tokens render fragments
+//! from the shared event-core view builders, event-type checkboxes with
+//! counts, orphan/privacy/leap-day/living-only toggles, export buttons,
+//! CSS range bars and the stylesheet); the options form (rule-14
+//! exclusion from the checked types, reference year, toggle round-trips);
+//! the not-loaded 409s and the unknown-view 400; and the escaping
+//! regression — hostile `<script>`-bearing names/types/dates render
+//! `&lt;script&gt;`-escaped in **every** view fragment (plan §11).
 
 use std::io::{Read as _, Write as _};
 use std::net::Ipv4Addr;
@@ -28,10 +31,19 @@ use web::state::{AppState, UPLOAD_CAP_BYTES};
 // The canonical workspace fixture: 5 people, 6 events (plan §11).
 const DATA_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/data.gramps");
 
-/// A minimal Gramps file carrying hostile markup in a person name, an
-/// event type and a text date — the escape-regression fixture: the
-/// decoded strings contain real `<script>` tags that must never reach the
-/// fragment raw.
+// The crafted date-form fixture: modifiers, partial dates, BC dates,
+// non-Gregorian calendars, daterange / datespan / datestr forms — the
+// ranges and text-only dates the range-bar and anchor tests assert on
+// (plan §11).
+const DATES_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/dates.gramps");
+
+/// A minimal Gramps file carrying hostile markup in person names, event
+/// types and a text date — the escape-regression fixture: the decoded
+/// strings contain real `<script>` tags that must never reach any view
+/// fragment raw. `_e1` is undated (list + timeline only); `_e2` carries
+/// a dated 1999-01-01 event with hostile name and type, so the three
+/// grid views (calendar, yrcal) and the timeline exercise the escaping
+/// too.
 const HOSTILE_GRAMPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
 "http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
@@ -45,6 +57,10 @@ const HOSTILE_GRAMPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
       <type>&lt;script&gt;alert(1)&lt;/script&gt;</type>
       <datestr val="&lt;img src=x onerror=alert(2)&gt;"/>
     </event>
+    <event handle="_e2" change="2" id="E0001">
+      <type>&lt;script&gt;alert(4)&lt;/script&gt;</type>
+      <dateval val="1999-01-01"/>
+    </event>
   </events>
   <people>
     <person handle="_p1" change="1" id="I0000">
@@ -54,6 +70,14 @@ const HOSTILE_GRAMPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
         <surname>Meowser</surname>
       </name>
       <eventref hlink="_e1" role="Primary"/>
+    </person>
+    <person handle="_p2" change="2" id="I0001">
+      <gender>M</gender>
+      <name type="Birth Name">
+        <first>&lt;script&gt;alert(5)&lt;/script&gt;</first>
+        <surname>Hostile</surname>
+      </name>
+      <eventref hlink="_e2" role="Primary"/>
     </person>
   </people>
 </database>
@@ -368,6 +392,105 @@ async fn options_returns_the_current_options_as_json() {
     assert_eq!(value["dedupe_same"], false);
 }
 
+/// Form-encode a `PUT /api/options` body and return the fragment.
+async fn put_options(app: &Router, body: &str) -> (StatusCode, axum::http::HeaderMap, Bytes) {
+    call(
+        app,
+        request(
+            Method::PUT,
+            "/api/options",
+            Some("application/x-www-form-urlencoded"),
+            &[],
+            body.as_bytes().to_vec(),
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn options_form_excludes_unchecked_types_rule_14() {
+    // Rule 14 from the checkbox list: only the *checked* types survive —
+    // sending just `type=Birth` excludes Death (exclusion wins). The
+    // response is the re-rendered fragment of the active tab (the HTMX
+    // swap target), so the fragment must reflect the new options.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = put_options(&app, "reference_year=2030&view=list&type=Birth").await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        text.contains("2000-03-03"),
+        "the surviving Birth row: {text}"
+    );
+    assert!(
+        !text.contains("2020-12-03"),
+        "the unchecked Death row was excluded: {text}"
+    );
+    assert!(text.contains("Reference year: 2030"));
+}
+
+#[tokio::test]
+async fn options_form_can_exclude_every_type() {
+    // No types checked → the exclusion set is the whole type universe →
+    // the empty-state hint renders (rule 14 + checkbox enumeration).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = put_options(&app, "reference_year=2030&view=list").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("No events match the current options.")
+    );
+}
+
+#[tokio::test]
+async fn options_form_re_renders_the_active_tab_and_round_trips() {
+    // The hidden `view` field keeps the options update on the active tab:
+    // a PUT with view=calendar answers with the calendar fragment. The
+    // toggles and reference year survive into `GET /api/options`.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let body = "reference_year=2030&view=calendar&type=Birth&type=Death&show_orphans=1&include_private=1&leap_day=keep&dedupe_same=1&living_only=1";
+    let (status, _, bytes) = put_options(&app, body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .contains("Anniversary calendar"),
+        "the PUT re-renders the active tab's fragment"
+    );
+
+    let (status, _, body) = call(
+        &app,
+        request(Method::GET, "/api/options", None, &[], Vec::new()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["reference_year"], 2030);
+    assert_eq!(value["show_orphans"], true);
+    assert_eq!(value["include_private"], true);
+    assert_eq!(value["living_only"], true);
+    assert_eq!(value["leap_day"], "keep");
+    assert_eq!(value["dedupe_same"], true);
+    assert_eq!(
+        value["exclude_types"],
+        serde_json::json!([]),
+        "both types checked → nothing excluded"
+    );
+}
+
+#[tokio::test]
+async fn options_form_requires_a_loaded_file() {
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _, _) = put_options(&app, "reference_year=2030&view=list").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
 #[tokio::test]
 async fn events_fragment_renders_the_list_view() {
     let (app, _state) = setup(UPLOAD_CAP_BYTES);
@@ -411,12 +534,21 @@ async fn events_fragment_defaults_to_the_list_view() {
 }
 
 #[tokio::test]
-async fn unsupported_views_are_400_until_milestone_14() {
+async fn all_four_view_tokens_render_fragments_from_the_shared_builders() {
+    // Milestone 14: every view token renders a fragment now — the GUI
+    // tabs call exactly these endpoints (plan §9 `GET /api/events?view=…`),
+    // each fragment built by the same event-core view builders the CLI
+    // and the writers use (plan §5).
     let (app, _state) = setup(UPLOAD_CAP_BYTES);
     let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
     assert_eq!(status, StatusCode::OK);
-    for view in ["calendar", "timeline", "yrcal"] {
-        let (status, _, _) = call(
+    for (view, marker) in [
+        ("list", "Harry Meowser"),
+        ("calendar", "Anniversary calendar"),
+        ("timeline", "Timeline"),
+        ("yrcal", "Calendar with years"),
+    ] {
+        let (status, headers, body) = call(
             &app,
             request(
                 Method::GET,
@@ -427,12 +559,229 @@ async fn unsupported_views_are_400_until_milestone_14() {
             ),
         )
         .await;
-        assert_eq!(
-            status,
-            StatusCode::BAD_REQUEST,
-            "view {view} not in this milestone"
+        assert_eq!(status, StatusCode::OK, "view {view}");
+        assert!(
+            headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html"),
+            "view {view} is a fragment"
+        );
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains(marker), "view {view} marker: {text}");
+        assert!(
+            text.contains("id=\"events\""),
+            "view {view} is an HTMX swap target"
         );
     }
+}
+
+#[tokio::test]
+async fn calendar_view_anchors_events_to_their_month_and_day() {
+    // data.gramps births anchor on (month, day) per rule 1: 2000-03-03 →
+    // the March page, day 3; the elapsed is 2026 − 2000 = 26 years
+    // (reference year = the current year, like the CLI).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        request(
+            Method::GET,
+            "/api/events?view=calendar",
+            None,
+            &[],
+            Vec::new(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("<h3>March</h3>"), "March page: {text}");
+    assert!(
+        text.contains("<th scope=\"row\">3</th>"),
+        "day 3 cell: {text}"
+    );
+    assert!(text.contains("Harry Meowser — Birth (2000-03-03)"));
+    assert!(text.contains("26 years"), "elapsed vs the reference year");
+}
+
+#[tokio::test]
+async fn timeline_view_groups_events_under_year_headers() {
+    // Rule 10: chronological year groups; data.gramps spans 1938–2020.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        request(
+            Method::GET,
+            "/api/events?view=timeline",
+            None,
+            &[],
+            Vec::new(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    for year in ["1938", "1946", "1970", "2000", "2020"] {
+        assert!(
+            text.contains(&format!("<h3>{year}</h3>")),
+            "year header {year}: {text}"
+        );
+    }
+    assert!(text.contains("Harry Meowser — Birth (2000-03-03)"));
+}
+
+#[tokio::test]
+async fn yrcal_view_lays_out_year_pages_with_actual_dates() {
+    // Rule 11 / D12: year-by-year pages, events on their actual dates.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        request(Method::GET, "/api/events?view=yrcal", None, &[], Vec::new()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("<h3>2000</h3>"), "year page 2000: {text}");
+    assert!(text.contains("<h4>March</h4>"), "March cell: {text}");
+    assert!(text.contains("Harry Meowser — Birth (2000-03-03)"));
+}
+
+#[tokio::test]
+async fn unknown_view_tokens_remain_a_400() {
+    // Milestone 14 implements exactly the four tokens; anything else is
+    // still rejected (the option form can only emit the four tabs).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    for view in ["bogus", "CALENDAR"] {
+        let (status, _, body) = call(
+            &app,
+            request(
+                Method::GET,
+                &format!("/api/events?view={view}"),
+                None,
+                &[],
+                Vec::new(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "view {view}");
+        assert!(
+            String::from_utf8(body.to_vec())
+                .unwrap()
+                .contains("unsupported view"),
+            "view {view} error names the token"
+        );
+    }
+}
+
+// -------------------------------------- range bars & anchor rules (dates.gramps)
+
+#[tokio::test]
+async fn timeline_range_events_render_as_css_bars() {
+    // The milestone-14 range bars (rule 10 / D11, plan §8): the cross-year
+    // Marriage 1914-07-28 → 1918-11-11 spans past its group (`bar-spans`,
+    // July-28 start geometry, "→ 1918" note); the Immigration span
+    // 1925-06-01 → 1925-08-31 is a same-year bar; the year-only Marriage
+    // 1822–1824 is a full-width bar; Graduation's text-only date lands in
+    // the terminal "Undated" group (rule 13).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATES_GRAMPS, "dates.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        request(
+            Method::GET,
+            "/api/events?view=timeline",
+            None,
+            &[],
+            Vec::new(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        text.contains("bar bar-spans"),
+        "cross-year/full-year bars: {text}"
+    );
+    assert!(
+        text.contains("left: 57%; width: 42%;"),
+        "July-28 start geometry: {text}"
+    );
+    assert!(text.contains("→ 1918"), "stop-year note: {text}");
+    assert!(text.contains("Immigration (1925-06-01 - 1925-08-31)"));
+    assert!(
+        text.contains("<h3>Undated</h3>"),
+        "rule-13 terminal group: {text}"
+    );
+    assert!(
+        text.contains("Graduation"),
+        "text-only date → undated group"
+    );
+}
+
+#[tokio::test]
+async fn calendar_anchors_range_starts_and_skips_year_only_ranges() {
+    // Rules 1/2/9/10: a range whose start has a month anchors at the start
+    // (day 1 when the day is missing — the Marriage 1822-11 anchors on
+    // November 1); year-only ranges (Marriage 1822–1824) and text-only
+    // dates never appear in this view.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATES_GRAMPS, "dates.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        request(
+            Method::GET,
+            "/api/events?view=calendar",
+            None,
+            &[],
+            Vec::new(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("<h3>November</h3>"), "Nov page: {text}");
+    assert!(
+        text.contains("<th scope=\"row\">1</th>"),
+        "day-1 anchor: {text}"
+    );
+    assert!(
+        text.contains("li class=\"range\""),
+        "ranges are flagged: {text}"
+    );
+    assert!(text.contains("Anniversary calendar"));
+}
+
+#[tokio::test]
+async fn yrcal_shows_year_only_events_as_full_year_rows() {
+    // Rule 11: year-only rows (the 1822–1824 Marriage, the year-only Birth
+    // 1822) render as full-year bars across the year page; dated events
+    // sit in their month/day cells (Marriage 1914-07-28 → July).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATES_GRAMPS, "dates.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = call(
+        &app,
+        request(Method::GET, "/api/events?view=yrcal", None, &[], Vec::new()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        text.contains("class=\"year-bar\""),
+        "full-year rows: {text}"
+    );
+    assert!(text.contains("<h3>1914</h3>"), "1914 page: {text}");
+    assert!(text.contains("<h4>July</h4>"), "July cell: {text}");
 }
 
 #[tokio::test]
@@ -554,44 +903,173 @@ async fn data_routes_return_409_before_any_load() {
 // --------------------------------------------------------- escaping test
 
 #[tokio::test]
-async fn events_fragment_escapes_hostile_names_types_and_dates() {
+async fn every_view_fragment_escapes_hostile_names_types_and_dates() {
+    // The escaping regression (plan §11): Askama's default HTML escape
+    // emits decimal numeric character references (`&#60;`/`&#62;` for
+    // `<`/`>`). The hostile strings travelled through XML entities, the
+    // model, the view builders and the row contract as literal
+    // `<script>` … and must come out entity-escaped in **every** view
+    // fragment — the dated `_e2` row (hostile name + type) appears in all
+    // four fragments, so each one is asserted.
     let (app, _state) = setup(UPLOAD_CAP_BYTES);
     let (status, body) = load(&app, HOSTILE_GRAMPS.as_bytes(), "escaped.gramps").await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
 
-    let (status, _, body) = call(
+    for view in ["list", "calendar", "timeline", "yrcal"] {
+        let (status, _, body) = call(
+            &app,
+            request(
+                Method::GET,
+                &format!("/api/events?view={view}"),
+                None,
+                &[],
+                Vec::new(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "view {view}");
+        let text = String::from_utf8(body.to_vec()).unwrap();
+
+        // The dated hostile row (_e2: 1999-01-01) is in every fragment.
+        assert!(
+            text.contains("&#60;script&#62;alert(5)&#60;/script&#62; Hostile"),
+            "view {view}: hostile name escaped: {text}"
+        );
+        assert!(
+            text.contains("&#60;script&#62;alert(4)&#60;/script&#62;"),
+            "view {view}: hostile type escaped: {text}"
+        );
+
+        // The undated row (_e1: datestr only) reaches list + timeline
+        // (rule 13), never the two calendars — assert it where it is.
+        if view == "list" || view == "timeline" {
+            assert!(
+                text.contains("&#60;script&#62;alert(3)&#60;/script&#62;"),
+                "view {view}: hostile name escaped: {text}"
+            );
+            assert!(
+                text.contains("&#60;script&#62;alert(1)&#60;/script&#62;"),
+                "view {view}: hostile type escaped: {text}"
+            );
+            assert!(
+                text.contains("&#60;img src=x onerror=alert(2)&#62;"),
+                "view {view}: hostile date text escaped: {text}"
+            );
+        }
+
+        assert!(
+            !text.contains("<script>"),
+            "view {view}: no raw <script> markup may reach the fragment: {text}"
+        );
+        assert!(
+            !text.contains("<img "),
+            "view {view}: no raw attribute-bearing element may reach the fragment: {text}"
+        );
+    }
+}
+
+// -------------------------------------------------- milestone-14 UI chrome
+
+#[tokio::test]
+async fn loaded_page_renders_four_tabs_checkboxes_toggles_and_exports() {
+    // The milestone-14 UI (plan §9): after a load the HTMX fragment
+    // carries the four view tabs, the event-type checkboxes (with the
+    // same enumeration `inspect` prints), the orphan/privacy/leap-day/
+    // living-only/dedupe toggles, and the export button group — one link
+    // per format plus the raw events.json inspection endpoint.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (ct, body) = multipart_body("gramps", "data.gramps", DATA_GRAMPS);
+    let (status, _, bytes) = call(
         &app,
-        request(Method::GET, "/api/events?view=list", None, &[], Vec::new()),
+        request(
+            Method::POST,
+            "/api/load",
+            Some(&ct),
+            &[("hx-request", "true")],
+            body,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let text = String::from_utf8(body.to_vec()).unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
 
-    // The hostile strings travelled through XML entities, the model, the
-    // view builder and the row contract as literal `<script>` … and must
-    // come out entity-escaped. Askama 0.16's default HTML escape emits
-    // decimal numeric character references (`&#60;`/`&#62;` for
-    // `<`/`>`) — the regression test locks the resulting bytes in.
+    // Four tabs, wired to the four fragment endpoints.
+    for (view, label) in [
+        ("list", "List"),
+        ("calendar", "Anniversary calendar"),
+        ("timeline", "Timeline"),
+        ("yrcal", "Calendar with years"),
+    ] {
+        assert!(
+            text.contains(&format!("data-view=\"{view}\"")),
+            "tab {view}: {text}"
+        );
+        assert!(text.contains(label), "tab label {label}: {text}");
+        assert!(
+            text.contains(&format!("/api/events?view={view}")),
+            "tab {view} hits the fragment endpoint"
+        );
+    }
+
+    // Event-type checkboxes with counts.
+    assert!(text.contains("Event types"));
     assert!(
-        text.contains("&#60;script&#62;alert(3)&#60;/script&#62;"),
-        "hostile name escaped: {text}"
+        text.contains("name=\"type\" value=\"Birth\""),
+        "Birth checkbox: {text}"
     );
     assert!(
-        text.contains("&#60;script&#62;alert(1)&#60;/script&#62;"),
-        "hostile type escaped: {text}"
+        text.contains("name=\"type\" value=\"Death\""),
+        "Death checkbox: {text}"
     );
+
+    // The five toggles.
+    for toggle in [
+        "show_orphans",
+        "include_private",
+        "living_only",
+        "leap_day",
+        "dedupe_same",
+    ] {
+        assert!(text.contains(toggle), "toggle {toggle}: {text}");
+    }
+
+    // Export button group — one link per format plus events.json.
+    for format in ["csv", "json", "parquet", "pdf"] {
+        assert!(
+            text.contains(&format!("/api/export?format={format}")),
+            "export {format}: {text}"
+        );
+    }
+    assert!(text.contains("/api/events.json"));
+
+    // The checkboxes reflect the current options (default = all types
+    // admitted + orphans shown): orphan (default) + both fixture types
+    // = at least three checked boxes.
     assert!(
-        text.contains("&#60;img src=x onerror=alert(2)&#62;"),
-        "hostile date text escaped: {text}"
+        text.matches("checked").count() >= 3,
+        "default options pre-check their boxes: {text}"
     );
+}
+
+#[tokio::test]
+async fn stylesheet_is_served_with_the_four_view_and_range_bar_css() {
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, headers, body) = call(
+        &app,
+        request(Method::GET, "/static/style.css", None, &[], Vec::new()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
-        !text.contains("<script>"),
-        "no raw <script> markup may reach the fragment: {text}"
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/css")
     );
-    assert!(
-        !text.contains("<img "),
-        "no raw attribute-bearing element may reach the fragment: {text}"
-    );
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains(".timeline-body .bar"), "the CSS range bars");
+    assert!(text.contains(".tab.active"), "tab styling");
+    assert!(text.contains(".type .count"), "checkbox count pills");
 }
 
 // ----------------------------------------------------- real-listener test

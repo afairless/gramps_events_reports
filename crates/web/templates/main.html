@@ -1,27 +1,76 @@
 {% if let Some(s) = loaded %}
-  <p>The file <strong>"{{ s.file_name }}"</strong> is loaded —
-    {{ s.event_count }} events, {{ s.people_count }} people
-    ({{ s.bytes }} bytes).</p>
+  <section class="summary">
+    <p>The file <strong>"{{ s.file_name }}"</strong> is loaded —
+      {{ s.event_count }} events, {{ s.people_count }} people
+      ({{ s.bytes }} bytes).</p>
+  </section>
 
-  <h2>Event types</h2>
-  <ul>
-    {% for t in s.event_types %}
-      <li>{{ t.event_type }} — {{ t.count }}</li>
-    {% endfor %}
-  </ul>
+  <form id="options" class="options"
+        hx-put="/api/options" hx-trigger="change"
+        hx-target="#events" hx-swap="outerHTML">
+    <input type="hidden" id="view" name="view" value="list"/>
 
-  <div hx-get="/api/events?view=list" hx-trigger="load" hx-swap="outerHTML">
+    <section class="controls">
+      <div class="field">
+        <label for="reference-year">Reference year</label>
+        <input id="reference-year" type="number" name="reference_year"
+               value="{{ context.reference_year }}" min="1" max="9999"/>
+        <span class="hint">elapsed years are measured against this year</span>
+      </div>
+      <div class="toggles">
+        <label class="toggle"><input type="checkbox" name="show_orphans" value="1"
+          {% if context.show_orphans %}checked{% endif %}/> show orphans</label>
+        <label class="toggle"><input type="checkbox" name="include_private" value="1"
+          {% if context.include_private %}checked{% endif %}/> include private records</label>
+        <label class="toggle"><input type="checkbox" name="living_only" value="1"
+          {% if context.living_only %}checked{% endif %}/> living only</label>
+        <label class="toggle"><input type="checkbox" name="leap_day" value="keep"
+          {% if context.leap_keep %}checked{% endif %}/> keep Feb 29 (no fold)</label>
+        <label class="toggle"><input type="checkbox" name="dedupe_same" value="1"
+          {% if context.dedupe_same %}checked{% endif %}/> deduplicate identical rows</label>
+      </div>
+    </section>
+
+    <fieldset class="types">
+      <legend>Event types</legend>
+      <div class="type-row">
+        {% for t in context.types %}
+          <label class="type">
+            <input type="checkbox" name="type" value="{{ t.event_type }}"
+                   {% if t.checked %}checked{% endif %}/>
+            <span class="type-name">{{ t.event_type }}</span>
+            <span class="count">{{ t.count }}</span>
+          </label>
+        {% endfor %}
+      </div>
+      <p class="hint">uncheck a type to exclude it from every view and export.</p>
+    </fieldset>
+  </form>
+
+  <section class="exports">
+    <span class="label">Export (with the current options):</span>
+    <a class="btn" href="/api/export?format=csv">CSV</a>
+    <a class="btn" href="/api/export?format=json">JSON</a>
+    <a class="btn" href="/api/export?format=parquet">Parquet</a>
+    <a class="btn" href="/api/export?format=pdf">PDF</a>
+    <a class="btn" href="/api/events.json">events.json</a>
+    <button class="btn" hx-post="/api/reset" hx-target="#main" hx-swap="innerHTML">unload file</button>
+  </section>
+
+  <nav id="tabs" class="tabs">
+    <button type="button" class="tab active" data-view="list" onclick="setView('list')"
+            hx-get="/api/events?view=list" hx-target="#events" hx-swap="outerHTML">List</button>
+    <button type="button" class="tab" data-view="calendar" onclick="setView('calendar')"
+            hx-get="/api/events?view=calendar" hx-target="#events" hx-swap="outerHTML">Anniversary calendar</button>
+    <button type="button" class="tab" data-view="timeline" onclick="setView('timeline')"
+            hx-get="/api/events?view=timeline" hx-target="#events" hx-swap="outerHTML">Timeline</button>
+    <button type="button" class="tab" data-view="yrcal" onclick="setView('yrcal')"
+            hx-get="/api/events?view=yrcal" hx-target="#events" hx-swap="outerHTML">Calendar with years</button>
+  </nav>
+
+  <section id="events" hx-get="/api/events?view=list" hx-trigger="load" hx-swap="outerHTML">
     <p class="hint">Loading events…</p>
-  </div>
-
-  <p>
-    <a href="/api/events.json">events.json</a>
-    · <a href="/api/export?format=csv">csv</a>
-    · <a href="/api/export?format=json">json</a>
-    · <a href="/api/export?format=parquet">parquet</a>
-    · <a href="/api/export?format=pdf">pdf</a>
-    · <button hx-post="/api/reset" hx-target="#main" hx-swap="innerHTML">unload file</button>
-  </p>
+  </section>
 {% else %}
   <form hx-post="/api/load" hx-encoding="multipart/form-data" hx-target="#main" hx-swap="innerHTML">
     <input type="file" name="gramps" accept=".gramps,.xml,.gz,.zip" required/>

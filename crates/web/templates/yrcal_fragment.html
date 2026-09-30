@@ -1,0 +1,37 @@
+<section id="events" class="view-yrcal">
+  <h2>Calendar with years</h2>
+  {% if years.is_empty() %}
+    <p class="hint">No events match the current options.</p>
+  {% else %}
+    {% for y in years %}
+      <section class="yrcal-year">
+        <h3>{{ y.year }}</h3>
+        {% for row in y.full_year %}
+          <div class="year-bar" title="{{ row.line }}">{{ row.line }}</div>
+        {% endfor %}
+        {% for m in y.months %}
+          <div class="yrcal-month">
+            <h4>{{ m.name }}</h4>
+            <table class="calendar">
+              <tbody>
+                {% for d in m.days %}
+                  <tr>
+                    <th scope="row">{{ d.day }}</th>
+                    <td>
+                      <ul class="entries">
+                        {% for e in d.entries %}
+                          <li class="{% if e.is_range %}range{% endif %}">{{ e.line }}</li>
+                        {% endfor %}
+                      </ul>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endfor %}
+      </section>
+    {% endfor %}
+  {% endif %}
+  <p class="hint">Reference year: {{ reference_year }} — events sit on their actual dates; ranges keep their full extent.</p>
+</section>

@@ -41,6 +41,12 @@ pub enum WebError {
         /// The offending token.
         format: String,
     },
+    /// The options form body was malformed or missing a required field.
+    #[error("malformed options form: {detail}")]
+    BadForm {
+        /// What went wrong.
+        detail: String,
+    },
     /// The multipart body itself failed to stream.
     #[error("upload stream failed: {0}")]
     Multipart(#[from] MultipartError),
@@ -72,7 +78,9 @@ impl IntoResponse for WebError {
             WebError::NoFile
             | WebError::UnsupportedView { .. }
             | WebError::UnknownFormat { .. } => StatusCode::BAD_REQUEST,
-            WebError::Parse(_) | WebError::Multipart(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            WebError::Parse(_) | WebError::Multipart(_) | WebError::BadForm { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             WebError::Lock | WebError::Template(_) | WebError::Writer(_) | WebError::Io(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }

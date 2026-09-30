@@ -1,0 +1,232 @@
+/* gramps-events web UI — the authored stylesheet for the four-view UI
+   (plan §9 / milestone 14). htmx.min.js is the only vendored non-Rust
+   artifact (plan §6.4 / §11.1 acceptance 8); this file is our own CSS:
+   the options form, the four tabs, the list/calendar/year/timeline
+   fragments, and the timeline's CSS range bars (plan §8 rule 10 / D11). */
+
+:root {
+  --accent: #2f5b8f;
+  --line: #dfe2e6;
+  --bg-soft: #f4f5f7;
+  --bar: #8ab4f8;
+  --bar-span: #5c8ede;
+  --range: #b27f3b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 1.5rem auto;
+  max-width: 68rem;
+  padding: 0 1rem;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #222;
+  background: #fff;
+}
+
+h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+h2 { margin-top: 1.25rem; font-size: 1.15rem; }
+h3 { margin: 0.5rem 0; font-size: 1rem; }
+h4 { margin: 0.4rem 0; font-size: 0.9rem; color: #444; }
+
+.tagline, .hint { color: #676767; font-size: 0.875rem; }
+
+/* --------------------------------------------------------- options form */
+
+.summary {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.options .controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.field label { font-weight: 600; }
+.field input[type="number"] {
+  width: 7rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin-left: 0.4rem;
+}
+
+.toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.toggles .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+fieldset.types {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-top: 0.5rem;
+}
+fieldset.types legend { font-weight: 600; padding: 0 0.4rem; }
+
+.type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.type {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.type-name { color: #333; }
+.type .count {
+  background: var(--bg-soft);
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  font-size: 0.75rem;
+  color: #555;
+}
+
+/* ------------------------------------------------------------- exports */
+
+.exports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+.exports .label { font-size: 0.85rem; color: #555; }
+
+button, .btn {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg-soft);
+  color: #222;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn:hover, button:hover { background: #e8ecf1; }
+
+/* ----------------------------------------------------------------- tabs */
+
+#tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.75rem; }
+.tab {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------- list fragment */
+
+#events { margin-top: 0.75rem; }
+
+table.events, table.calendar {
+  border-collapse: collapse;
+  margin-top: 0.4rem;
+  width: 100%;
+}
+th, td {
+  border: 1px solid var(--line);
+  padding: 0.3rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+thead th { background: var(--bg-soft); }
+
+/* ------------------------------------- calendar & calendar-with-years */
+
+.month, .yrcal-month { margin: 0.5rem 0 0.25rem; }
+
+ul.entries { margin: 0; padding: 0; list-style: none; }
+li.range {
+  color: var(--range);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------- timeline bars */
+
+.timeline-year { border-top: 1px solid var(--line); }
+.timeline-year h3 { margin: 0.6rem 0 0.25rem; }
+
+.timeline-body .track {
+  position: relative;
+  height: 1.6em;
+  background: var(--bg-soft);
+  border-radius: 4px;
+}
+
+.timeline-body .bar {
+  position: absolute;
+  top: 0.15em;
+  height: 1.3em;
+  border-radius: 0.65em;
+  background: var(--bar);
+  color: #fff;
+  font-size: 0.82rem;
+  line-height: 1.3em;
+  padding: 0 0.4em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+.timeline-body .bar.bar-spans { background: var(--bar-span); }
+
+.timeline-body .bar-note {
+  font-size: 0.75rem;
+  opacity: 0.85;
+  margin-left: 0.4em;
+}
+
+.timeline-body .entry {
+  padding: 0.15em 0.2em;
+  font-size: 0.9rem;
+}
+
+/* ------------------------------------------------- year pages (yrcal) */
+
+.yrcal-year { border-top: 1px solid var(--line); }
+.yrcal-year h3 { margin: 0.6rem 0 0.25rem; }
+
+.year-bar {
+  display: inline-block;
+  max-width: 100%;
+  background: var(--bar-span);
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 0.5em;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

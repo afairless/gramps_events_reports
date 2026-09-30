@@ -4,20 +4,24 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>gramps-events</title>
+  <link rel="stylesheet" href="/static/style.css"/>
   <script src="/static/htmx.min.js"></script>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 64rem; }
-    h1 { margin-bottom: 0.25rem; }
-    .hint { color: #555; }
-    table { border-collapse: collapse; margin-top: 0.5rem; }
-    th, td { border: 1px solid #ccc; padding: 0.25rem 0.6rem; text-align: left; }
-    th { background: #f2f2f2; }
-    button { cursor: pointer; }
-  </style>
+  <script>
+    // The active view tab. Kept in the options form's hidden `view` field
+    // so the next options change re-renders the *same* tab (plan §9:
+    // the PUT route answers with the current view's fragment).
+    function setView(view) {
+      const field = document.getElementById('view');
+      if (field) { field.value = view; }
+      for (const tab of document.querySelectorAll('#tabs .tab')) {
+        tab.classList.toggle('active', tab.dataset.view === view);
+      }
+    }
+  </script>
 </head>
 <body>
   <h1>gramps-events</h1>
-  <p class="hint">Local viewer for the events of a Gramps database — the data never leaves this machine.</p>
+  <p class="tagline">Local viewer for the events of a Gramps database — the data never leaves this machine.</p>
   <main id="main">
     {% include "main.html" %}
   </main>
