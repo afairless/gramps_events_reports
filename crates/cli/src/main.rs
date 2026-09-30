@@ -2,7 +2,7 @@
 //!
 //! Argument parsing, file loading and printing live here; every command's
 //! logic is in the `cli` library so it stays unit-testable. `serve` (the
-//! web UI) joins the subcommand set in milestone 13.
+//! web UI) joined the subcommand set in milestone 13.
 
 use std::process::ExitCode;
 
@@ -49,6 +49,10 @@ fn dispatch(cli: Cli) -> anyhow::Result<()> {
             for path in written {
                 println!("{}", path.display());
             }
+            Ok(())
+        }
+        Command::Serve(serve) => {
+            run::serve(serve.port)?;
             Ok(())
         }
     }

@@ -1,0 +1,31 @@
+{% if let Some(s) = loaded %}
+  <p>The file <strong>"{{ s.file_name }}"</strong> is loaded —
+    {{ s.event_count }} events, {{ s.people_count }} people
+    ({{ s.bytes }} bytes).</p>
+
+  <h2>Event types</h2>
+  <ul>
+    {% for t in s.event_types %}
+      <li>{{ t.event_type }} — {{ t.count }}</li>
+    {% endfor %}
+  </ul>
+
+  <div hx-get="/api/events?view=list" hx-trigger="load" hx-swap="outerHTML">
+    <p class="hint">Loading events…</p>
+  </div>
+
+  <p>
+    <a href="/api/events.json">events.json</a>
+    · <a href="/api/export?format=csv">csv</a>
+    · <a href="/api/export?format=json">json</a>
+    · <a href="/api/export?format=parquet">parquet</a>
+    · <a href="/api/export?format=pdf">pdf</a>
+    · <button hx-post="/api/reset" hx-target="#main" hx-swap="innerHTML">unload file</button>
+  </p>
+{% else %}
+  <form hx-post="/api/load" hx-encoding="multipart/form-data" hx-target="#main" hx-swap="innerHTML">
+    <input type="file" name="gramps" accept=".gramps,.xml,.gz,.zip" required/>
+    <button type="submit">Load</button>
+  </form>
+  <p class="hint">Pick a .gramps file (plain XML, gzip or zip) — up to 200 MB.</p>
+{% endif %}

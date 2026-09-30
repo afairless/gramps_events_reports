@@ -1,0 +1,32 @@
+<section id="events">
+  <h2>Events (list view)</h2>
+  {% if rows.is_empty() %}
+    <p class="hint">No events match the current options.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Person</th>
+          <th>Type</th>
+          <th>Date</th>
+          <th>Place</th>
+          <th>Elapsed</th>
+          <th>Flags</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.person_name }}</td>
+            <td>{{ row.event_type }}</td>
+            <td>{{ row.date_text }}</td>
+            <td>{{ row.place }}</td>
+            <td>{{ row.elapsed }}</td>
+            <td>{{ row.flags }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+  <p class="hint">Reference year: {{ reference_year }}.</p>
+</section>

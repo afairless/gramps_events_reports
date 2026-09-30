@@ -3,3 +3,40 @@ name = "web"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+# The layered crates the server drives: parse → core → writers (plan §5).
+gramps-xml = { path = "../gramps-xml" }
+event-core = { path = "../event-core" }
+writers = { path = "../writers" }
+# HTTP server bound to 127.0.0.1 (plan §6.4/§9, decision D1): axum 0.8
+# with the `multipart` feature so the upload route streams multipart
+# fields (multer spools large parts to disk, keeping memory bounded while
+# the hard cap is enforced).
+axum = { workspace = true }
+# Server-rendered templates (plan §6.4): askama 0.16. Output is
+# HTML-escaped by default — the escaping-regression test (plan §11) locks
+# safe rendering of hostile names/types/dates into the view fragments.
+askama = { workspace = true }
+# The async runtime the `serve` entry point and the tortuous tests run on
+# (tokio net for the listener, signal for graceful shutdown, macros for
+# #[tokio::test]).
+tokio = { workspace = true }
+# The run's options object every view and export is filtered by; the API
+# DTOs serialize on top of it.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Typed API errors (thiserror) mapping onto HTTP status codes.
+thiserror = { workspace = true }
+# Generated temp-file names for uploads (the browser filename is never
+# used as a path) plus per-export scratch directories.
+tempfile = { workspace = true }
+
+[dev-dependencies]
+# Integration tests drive the router exactly as HTTP clients do — Tower's
+# `oneshot` ServiceExt (plan §11 web tests).
+tower = { workspace = true }
+# Response-body collection in the oneshot tests (bytes::Bytes), plus the
+# `bytes` crate the test helper signatures name.
+http-body-util = { workspace = true }
+bytes = "1"

@@ -13,10 +13,15 @@ clap = { version = "4", features = ["derive"] }
 # plain messages (plan §6.5).
 anyhow = "1"
 
-# The layered crates this binary drives: parse → core → writers.
+# The layered crates this binary drives: parse → core → writers → web.
 gramps-xml = { path = "../gramps-xml" }
 event-core = { path = "../event-core" }
 writers = { path = "../writers" }
+# The local web UI (milestone 13): `serve` starts the axum server via the
+# web crate; tokio's multi-thread runtime is what its `serve` entry point
+# blocks on.
+web = { path = "../web" }
+tokio = { workspace = true }
 # Civil-date parsing for `--date-range START..END` (jiff::civil::Date).
 jiff = { workspace = true }
 

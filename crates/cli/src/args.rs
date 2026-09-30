@@ -8,7 +8,9 @@
 //! - `list <file> [filters] [--view list|calendar|timeline|yrcal]` — render
 //!   any of the four views as text (list is the default);
 //! - `report <file> [filters] [--format …] [--out-dir …] [--out-prefix …]` —
-//!   write the who-view as csv / json / parquet / pdf files.
+//!   write the who-view as csv / json / parquet / pdf files;
+//! - `serve [--port 8380]` — start the local web UI on 127.0.0.1 (the
+//!   `web` crate; plan §6.5).
 //!
 //! `--format` is required on `report` (no formats is a clap error) and
 //! `--format all` expands to exactly csv, json, parquet and pdf (plan §11).
@@ -47,6 +49,8 @@ pub enum Command {
     List(ListArgs),
     /// Write the database events to csv / json / parquet / pdf files.
     Report(ReportArgs),
+    /// Start the local web UI on 127.0.0.1:PORT (the `web` crate).
+    Serve(ServeArgs),
 }
 
 /// Filters shared by `list` and `report` — the plan's "same filters"
@@ -107,6 +111,17 @@ pub struct ReportArgs {
     /// Filename prefix for the output files (default: the input file stem).
     #[arg(long)]
     pub out_prefix: Option<String>,
+}
+
+/// The `serve` subcommand arguments (plan §6.5: `serve [--port 8380]`).
+///
+/// The server binds **127.0.0.1** only (plan §9) — a local, single-user
+/// tool handling family PII; nothing listens on an external interface.
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// The TCP port to listen on.
+    #[arg(long, default_value_t = web::DEFAULT_PORT)]
+    pub port: u16,
 }
 
 /// The four view kinds accepted by `--view`, with `yrcal` for the
@@ -415,5 +430,23 @@ mod tests {
         // The output contains at least Birth with a nonzero count and a
         // total counter — the exact shape is locked by the snapshot test.
         assert!(out.contains("Total events:"));
+    }
+
+    #[test]
+    fn serve_defaults_to_the_plan_port_8380() {
+        let cli = Cli::try_parse_from(["gramps-events", "serve"]).unwrap();
+        let Command::Serve(serve) = cli.command else {
+            panic!("expected serve")
+        };
+        assert_eq!(serve.port, 8380);
+    }
+
+    #[test]
+    fn serve_accepts_an_explicit_port() {
+        let cli = Cli::try_parse_from(["gramps-events", "serve", "--port", "9000"]).unwrap();
+        let Command::Serve(serve) = cli.command else {
+            panic!("expected serve")
+        };
+        assert_eq!(serve.port, 9000);
     }
 }

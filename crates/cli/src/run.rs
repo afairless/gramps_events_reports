@@ -1,11 +1,14 @@
 //! The three lived-in commands over a parsed [`gramps_xml::Database`]
-//! (plan §6.5): `inspect`, `list` and `report`.
+//! (plan §6.5): `inspect`, `list` and `report`, plus `serve`, which
+//! starts the local web UI (the `web` crate) on 127.0.0.1.
 //!
 //! Each command runs the shared event-core pipeline (`collect_events` →
 //! `build_view`); `list` renders the chosen view as text and `report`
 //! hands the flat rows to the writers (csv / json / parquet) and the PDF
 //! document to the PDF backend — one command producing all four files
-//! (plan §11.1 acceptance 4).
+//! (plan §11.1 acceptance 4). `serve` delegates to `web::serve`, so the
+//! GUI shares every line of core logic with the CLI and ships in the
+//! same binary (plan §6.5).
 
 use std::path::Path;
 
@@ -92,6 +95,20 @@ pub fn report(
         written.push(dest);
     }
     Ok(written)
+}
+
+/// `serve`: start the web UI on 127.0.0.1:port — the CLI form of the GUI
+/// workflow (plan §6.5). Runs until Ctrl-C; the server's uploads and temp
+/// dir are cleaned up when its state drops on exit.
+pub fn serve(port: u16) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to start the tokio runtime")?;
+    runtime
+        .block_on(web::serve(web::ServeConfig::local(port)))
+        .context("web server failed")?;
+    Ok(())
 }
 
 /// The output filename for one format: `{prefix}.{ext}` (csv, json,

@@ -7,12 +7,13 @@
 //!
 //! - [`args`] — the clap derive surface and the conversions from CLI
 //!   values to the shared `ReportOptions` / `Formats` / `ViewKind` types;
-//! - [`run`] — the three commands (`inspect` / `list` / `report`) over a
-//!   parsed [`gramps_xml::Database`];
+//! - [`run`] — the commands (`inspect` / `list` / `report` / `serve`)
+//!   over a parsed [`gramps_xml::Database`];
 //! - [`render`] — the human-readable text rendering of any of the four
 //!   views the `list` subcommand prints.
 //!
-//! The scaffolded `serve` subcommand (the web UI) is wired by milestone 13.
+//! `serve` (the web UI) was wired by milestone 13: it starts the `web`
+//! crate's axum server on 127.0.0.1 -- the same binary ships CLI and GUI.
 
 pub mod args;
 pub mod render;

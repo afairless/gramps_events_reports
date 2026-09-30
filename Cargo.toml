@@ -52,6 +52,20 @@ typst-pdf = "=0.14.2"
 # Serif + friends) so `TypstPdf` needs no system font lookup and stays
 # deterministic across machines.
 typst-assets = "=0.14.2"
+# Web API + skeleton UI (milestone 13, plan §6.4/D1): axum 0.8 with the
+# `multipart` feature for the size-capped upload route; askama 0.16
+# server-rendered templates (HTML-escaped by default); tokio is the
+# runtime the `serve` subcommand's server runs on; tempfile provides the
+# generated upload names and the export scratch dirs.
+axum = { version = "0.8", features = ["multipart"] }
+askama = "0.16"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
+tempfile = "3"
+# Test-only HTTP plumbing: Tower's `oneshot` (ServiceExt) drives the web
+# crate's integration tests exactly as an HTTP client would (plan §11
+# web tests).
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 [workspace.package]
 version = "0.1.0"
