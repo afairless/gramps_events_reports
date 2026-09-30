@@ -41,6 +41,10 @@ pub struct ResolvedEvent {
     /// The `<type>` element verbatim — `"Birth"`, `"Marriage"`, or a
     /// user-defined type; never empty in practice.
     pub event_type: String,
+    /// The event's Gramps id (`id="E0000"`), when the exporter set one —
+    /// the flat writer stays traceable back to the source file and it is
+    /// the final tie-break of the plan's deterministic order (rule 12).
+    pub event_id: Option<String>,
     /// The parsed Gramps date, when the event carries one of the four date
     /// elements; `None` for undated events (plan §8 rule 13).
     pub date: Option<GrampsDate>,

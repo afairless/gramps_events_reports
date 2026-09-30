@@ -10,3 +10,11 @@ gramps-xml = { path = "../gramps-xml" }
 # Civil-date type for the resolved, Gregorian-normalized dates; pinned at
 # milestone 4 (gramps-dates), shared workspace-wide.
 jiff = { workspace = true }
+# The EventRow flat contract is serialized by the milestone 9/10 writers;
+# the derive is pinned here at milestone 8 when the contract is defined.
+serde = { workspace = true }
+
+[dev-dependencies]
+# Contract goldens assert the exact serialized EventRow shape (field names
+# are the CSV/JSON/Parquet schema).
+serde_json = { workspace = true }

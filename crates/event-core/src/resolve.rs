@@ -133,6 +133,7 @@ fn resolve_event(event: &Event, db: &Database, index: &HandleIndex) -> ResolvedE
     let date = event.date.as_ref();
     ResolvedEvent {
         event_type: event.event_type.clone(),
+        event_id: event.gramps_id.clone(),
         date: date.cloned(),
         gregorian: date.and_then(|gramps| gramps.to_gregorian()),
         subjects: resolution.subjects,

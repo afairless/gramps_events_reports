@@ -23,18 +23,32 @@
 //!   anniversary keys (§8 rules 1/3) and the leap-day fold flag (D6);
 //! - [`pipeline::passes`] — the filter pipeline itself.
 //!
-//! Milestone 8 adds the views (`ListView`, `CalendarView`,
-//! `CalendarWithYearsView`, `TimelineView`) and the `EventRow` contract.
+//! Milestone 8 adds the views and the flat writer contract:
+//!
+//! - [`row::EventRow`] — the flat serializable output contract shared by
+//!   CSV / JSON / Parquet (plan §7.3), incl. `event_date_stop`,
+//!   `date_is_range` and `leap_day_folded`;
+//! - [`views::build_view`] / [`views::view`] / [`views::rows`] — the
+//!   `ListView` and `CalendarView` builders (the milestone-8 views) and the
+//!   flatten back to `EventRow`; anchor rules 1/3 (month → day 1, year-only
+//!   excluded) and the Feb 29 fold (D6) land here. The year-based views
+//!   (`Timeline`, `CalendarWithYears`) arrive in milestone 9.
 
 pub mod model;
 pub mod options;
 pub mod pipeline;
 pub mod resolve;
+pub mod row;
+pub mod views;
 
 pub use model::{PersonDisplay, ResolvedEvent};
 pub use options::{LeapDayPolicy, ReportOptions};
 pub use pipeline::{age_at_event, elapsed_years, probably_alive};
 pub use resolve::{HandleIndex, build_index, collect_events};
+pub use row::EventRow;
+pub use views::{
+    CalendarDay, CalendarMonth, CalendarView, ListView, View, ViewKind, build_view, rows, view,
+};
 
 /// Canonical crate name — smoke tests (and later workspace integration
 /// tests) use this to assert crate linkage.

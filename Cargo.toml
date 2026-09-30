@@ -25,6 +25,10 @@ resolver = "3"
 thiserror = "2"
 # Civil-date math: pinned at milestone 4 (gramps-dates).
 jiff = "0.2"
+# Flat output contract: pinned at milestone 8 when EventRow gains its serde
+# shape (CSV/JSON/Parquet writers consume it from milestone 9/10 on).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # .gramps containers + XML parsing: pinned at milestone 1/4 (gramps-xml).
 flate2 = "1.1"
 roxmltree = "0.21"
