@@ -14,9 +14,10 @@
 //! later is a breaking schema change for Parquet readers — any evolution
 //! must bump a `schema_version` field or ship a new file format (plan
 //! §7.3). The serialized shape (field names and types) is locked by a
-//! golden test.
+//! golden test; `Deserialize` exists so the csv/json writers' parse-back
+//! round-trip tests (plan §11) can read rows back exactly as written.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One flat output row (plan §7.3): an event as seen by one of its
 /// subjects.
@@ -37,7 +38,7 @@ use serde::Serialize;
 /// Feb 28 with `leap_day_folded = true`, while `event_date` keeps the true
 /// Gregorian date. Rows without an anchor (year-only dates, non-convertible
 /// calendars, undated events) carry `None` in both.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRow {
     /// The subject's Gramps id (`id="I0000"`), when the exporter set one.
     pub person_id: Option<String>,

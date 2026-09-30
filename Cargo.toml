@@ -35,6 +35,12 @@ roxmltree = "0.21"
 # Only deflate decompression is needed to read Gramps "saved tree" zips;
 # the default feature set pulls in bzip2/lzma/zstd backends we never use.
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
+# Row writers (milestone 10): csv / json / parquet backends (plan §6.3).
+csv = "1.4"
+# arrow-rs pinned at 60.x per plan §6.3 — StructArray → RecordBatch →
+# ArrowWriter, plus ParquetRecordBatchReaderBuilder in the round-trip tests.
+arrow = "60"
+parquet = "60"
 
 [workspace.package]
 version = "0.1.0"

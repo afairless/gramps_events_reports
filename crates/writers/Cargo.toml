@@ -3,3 +3,25 @@ name = "writers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+# The EventRow flat contract this crate serializes (milestone 8 wire shape).
+event-core = { path = "../event-core" }
+# CSV backend (plan §6.3): serde-driven records with a field-name header row.
+csv = { workspace = true }
+# JSON backend: one compact array of EventRow objects, Options as null.
+serde_json = { workspace = true }
+# Parquet backend: fixed flat schema → StructArray → RecordBatch → arrow
+# `ArrowWriter` (plan §6.3, arrow-rs 60). `parquet`'s default "arrow"
+# feature provides the writer and the record-batch reader used in tests.
+arrow = { workspace = true }
+parquet = { workspace = true }
+# Domain error type spanning io / csv / json / parquet failures.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Round-trip and bitflag-algebra property tests (plan §11) — same family
+# as the core crate's proptests.
+proptest = "1"
+# Isolated temp directories for writer output in every test.
+tempfile = "3"
