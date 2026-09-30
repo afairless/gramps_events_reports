@@ -41,6 +41,17 @@ csv = "1.4"
 # ArrowWriter, plus ParquetRecordBatchReaderBuilder in the round-trip tests.
 arrow = "60"
 parquet = "60"
+# PDF writer (milestone 11): the Typst renderer behind the `PdfBackend`
+# trait (plan §6.3, decision D2). The plan calls for typst 0.15; the
+# installed toolchain is rustc 1.91 while typst ≥ 0.15 requires 1.92, so
+# the exact verified patch — 0.14.2, rust 1.89 — is pinned here (their
+# APIs churn between minor releases, per plan §6.3).
+typst = "=0.14.2"
+typst-pdf = "=0.14.2"
+# The PdfWorld font book is fed by typst's bundled fonts (Libertinus
+# Serif + friends) so `TypstPdf` needs no system font lookup and stays
+# deterministic across machines.
+typst-assets = "=0.14.2"
 
 [workspace.package]
 version = "0.1.0"

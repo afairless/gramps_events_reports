@@ -10,14 +10,17 @@
 //! the destination only on success, so an aborted export never leaves a
 //! partial file at the final path. See [`atomic`] for the machinery.
 //!
-//! The `PDF` format bit is already part of the shared `Formats` surface
-//! (the CLI and GUI pass every combination in one value); the `PdfBackend`
-//! trait and the Typst renderer ship in milestone 11.
+//! The `PDF` format bit is part of the shared `Formats` surface, and the
+//! PDF backend ships in milestone 11: [`pdf::PdfDocument`] is the report's
+//! own document model (title, reference year, calendar months),
+//! [`pdf::build_pdf_document`] builds it from an event-core view, and
+//! [`pdf::TypstPdf`] renders it behind the [`pdf::PdfBackend`] trait.
 
 pub mod csv;
 pub mod error;
 pub mod json;
 pub mod parquet;
+pub mod pdf;
 
 mod atomic;
 
@@ -29,6 +32,10 @@ pub use csv::CsvWriter;
 pub use error::WriterError;
 pub use json::JsonWriter;
 pub use parquet::ParquetWriter;
+pub use pdf::{
+    DEFAULT_TITLE, PdfBackend, PdfDay, PdfDocument, PdfEntry, PdfMonth, RenderedPdf, TypstPdf,
+    build_pdf_document,
+};
 
 /// Output formats the row writers can produce (plan §6.3).
 ///

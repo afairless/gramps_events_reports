@@ -18,6 +18,14 @@ arrow = { workspace = true }
 parquet = { workspace = true }
 # Domain error type spanning io / csv / json / parquet failures.
 thiserror = { workspace = true }
+# PDF backend (plan §6.3, decision D2): typst compiles the rendered
+# markup into a `PagedDocument` and typst-pdf exports its bytes; exact
+# 0.14.2 pins per the workspace notes (their APIs churn between minor
+# releases).
+typst = { workspace = true }
+typst-pdf = { workspace = true }
+# Bundled Libertinus fonts for the PdfWorld font book (workspace notes).
+typst-assets = { workspace = true }
 
 [dev-dependencies]
 # Round-trip and bitflag-algebra property tests (plan §11) — same family

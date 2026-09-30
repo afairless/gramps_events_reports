@@ -1,12 +1,14 @@
-//! The [`WriterError`] type shared by every row writer.
+//! The [`WriterError`] type shared by every writer (row writers and the
+//! PDF backend).
 
 use std::path::Path;
 
-/// Errors raised by the row writers (plan §7.4).
+/// Errors raised by the writers (plan §7.4).
 ///
 /// I/O failures carry the path they occurred on so an export abort can be
 /// diagnosed without re-deriving it from the call site; the serde and
-/// arrow/parquet families convert automatically via `?`.
+/// arrow/parquet families convert automatically via `?`; the PDF variant
+/// carries the Typst compiler/export diagnostics verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum WriterError {
     /// An I/O failure while creating the temp file, flushing it, renaming
@@ -57,6 +59,13 @@ pub enum WriterError {
     /// other writer-level failure without a more specific category.
     #[error("{0}")]
     Other(String),
+
+    /// Typst compilation or PDF export failure (plan §6.3 alt. A / D2).
+    /// The message carries the compiler's diagnostics; a failure here
+    /// means the generated markup regressed — the renderer's input is
+    /// internal, never user-supplied.
+    #[error("pdf error: {0}")]
+    Pdf(String),
 }
 
 impl WriterError {
