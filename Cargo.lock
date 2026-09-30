@@ -120,6 +120,7 @@ dependencies = [
  "gramps-dates",
  "gramps-xml",
  "jiff",
+ "proptest",
  "serde",
  "serde_json",
 ]

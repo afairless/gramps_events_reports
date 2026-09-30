@@ -18,3 +18,6 @@ serde = { workspace = true }
 # Contract goldens assert the exact serialized EventRow shape (field names
 # are the CSV/JSON/Parquet schema).
 serde_json = { workspace = true }
+# Year-based view ordering properties (milestone 9, plan §11 property
+# tests) — same version family as the date crate's proptests.
+proptest = "1"

@@ -4,45 +4,62 @@
 //! [`ResolvedEvent`] stream into one of the plan's views; [`rows`] flattens
 //! any view back to the [`EventRow`] contract the writers serialize.
 //!
-//! Milestone 8 ships the **list** and the **anniversary calendar**; the two
-//! year-based views ([`ViewKind`]'s future `Timeline` and
-//! `CalendarWithYears` variants) arrive in milestone 9.
+//! Milestone 8 shipped the **list** and the **anniversary calendar**;
+//! milestone 9 adds the two year-based views: the **timeline** (§8 rule 10,
+//! with full-extent range rows for the D11 bars) and the
+//! **calendar-with-years** (§8 rule 11 / D12).
 //!
 //! ```text
 //!  ResolvedEvent stream ──▶ expand: one EventRow per (event, subject)
 //!                                (couples expand to one row per spouse,
 //!                                 plan §8.6; dedupe_same collapses
 //!                                 identical (type, subject, mm-dd) rows)
-//!                                ┌───────────────┬──────────────────┐
-//!                                ▼               ▼                  ▼
-//!                          ListView        CalendarView            (milestone 9
-//!                          (rows sorted    (months → days →          views)
-//!                           per rule 12)    entries, anchored
-//!                                           per rules 1/3, Feb 29
-//!                                           folded per D6)
+//!                                ┌──────────┬──────────┬───────────────┐
+//!                                ▼          ▼          ▼               ▼
+//!                          ListView  CalendarView  TimelineView  CalendarWithYearsView
+//!                          (rows     (months →    (year headers,   (year-by-year
+//!                           sorted     days →       ranges keep      month grid;
+//!                           per rule   entries,     their full       rows sit on
+//!                           12)        anchored     start→stop       actual date
+//!                                      per rules    extent,          cells;
+//!                                      1/3, Feb     terminal         year-only rows
+//!                                      29 folded    "Undated"        land in the
+//!                                      per D6)      group,           year's
+//!                                                    rule 13)         full_year)
 //! ```
 //!
 //! Ordering follows the determinism contract (plan §8 rule 12): the list
-//! sorts by (start date, event type, primary subject, event id) with
-//! undated rows terminal (rule 13); calendar days follow
-//! (month, day) with entries sorted by (type, subject, event id). Sorting
-//! never depends on set or hash iteration order.
+//! and the timeline sort by (start date, event type, primary subject,
+//! event id) with undated rows terminal (rule 13); calendar days follow
+//! (month, day) with entries sorted by (type, subject, event id); the
+//! calendar-with-years flattens by the same (start date, type, subject,
+//! id) key. Sorting never depends on set or hash iteration order.
 
 use std::collections::HashSet;
 
 use crate::model::{PersonDisplay, ResolvedEvent};
 use crate::options::ReportOptions;
 use crate::row::{EventRow, format_age};
+use gramps_dates::Calendar;
 
-/// Which of the plan's views to build. Milestone 8 implements `List` and
-/// `Calendar`; the year-based `Timeline` / `CalendarWithYears` variants are
-/// added by milestone 9.
+/// Which of the plan's views to build. `List` and `Calendar` arrived in
+/// milestone 8; the year-based `Timeline` / `CalendarWithYears` variants
+/// are added by milestone 9.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     /// Flat, sortable table of events (plan §1.6; §8 rule 12 order).
     List,
     /// Recurring anniversary calendar, no years (plan §1.6, §8 rule 1).
     Calendar,
+    /// Chronological view grouped under year headers (plan §8 rule 10):
+    /// ranges/spans render as bars spanning start → stop (D11) and
+    /// year-less events collect in a terminal "Undated" group (rule 13).
+    Timeline,
+    /// Year-by-year month grid covering the span of the event data (plan
+    /// §8 rule 11 / D12): rows sit on their actual date cells, ranges
+    /// carry their full start → stop extent, year-only rows shade whole
+    /// years.
+    CalendarWithYears,
 }
 
 /// A built view — the structure the writers and the web UI render.
@@ -53,6 +70,11 @@ pub enum View {
     /// The anniversary calendar: `EventRow`s grouped by their effective
     /// anchor (month → day → entries).
     Calendar(CalendarView),
+    /// The timeline: chronological groups under year headers (rule 10),
+    /// range rows keeping their full extent, terminal "Undated" group.
+    Timeline(TimelineView),
+    /// The calendar-with-years: a year-by-year month grid (rule 11 / D12).
+    CalendarWithYears(CalendarWithYearsView),
 }
 
 /// The list view — a flat row set in the plan's deterministic order
@@ -91,6 +113,85 @@ pub struct CalendarDay {
     pub entries: Vec<EventRow>,
 }
 
+/// The timeline view (plan §8 rule 10) — chronological order grouped
+/// under year headers. Single dates render as entries/markers; ranges and
+/// spans keep their full start → stop extent (the row's `event_date` /
+/// `event_date_stop` / `event_date_text`) so renderers draw them as bars
+/// spanning the whole range (D11) — year-only ranges as full-year-width
+/// bars. Year-less events — text-only dates and events with no date
+/// element — collect in the terminal "Undated" group (rule 13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineView {
+    /// The year groups in ascending order, each with its rows in the
+    /// plan's deterministic order; the terminal "Undated" group (when any
+    /// year-less row exists) is last.
+    pub years: Vec<TimelineYear>,
+}
+
+/// One year group of the timeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineYear {
+    /// The group's header year; `None` only on the terminal "Undated"
+    /// group (rule 13).
+    pub year: Option<i32>,
+    /// The group's rows in the plan's deterministic order — (start date
+    /// ascending, event type, subject, event id), rule 12; the "Undated"
+    /// group sorts by (event type, subject, event id), rule 13.
+    pub rows: Vec<EventRow>,
+}
+
+/// The calendar-with-years view (plan §8 rule 11 / D12): a year-by-year
+/// month grid covering the span of the event data.
+///
+/// Rows sit on their actual date cells — the anchor from rule 1/3 applied
+/// to the row's own (year, month, day): a row with a day lands on
+/// (month, day), a month-only row lands on (month, 1). Rows with no month
+/// — year-only dates and year-only ranges — land in the year's
+/// [`CalendarWithYearsYear::full_year`] list and carry the full
+/// start → stop extent (`event_date_text`, `date_is_range`): renderers
+/// shade the whole month span of every year they cover across the grid
+/// (rule 11). Year-less rows never appear here (rule 13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarWithYearsView {
+    /// The grid's years in ascending order — every year from the earliest
+    /// to the latest row covers, so the grid is a contiguous span (rule
+    /// 11). Years without content hold empty months/full_year lists.
+    pub years: Vec<CalendarWithYearsYear>,
+}
+
+/// One year of the calendar-with-years grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarWithYearsYear {
+    /// The year.
+    pub year: i32,
+    /// The year's month cells that hold rows, ascending; each holds only
+    /// the days with entries.
+    pub months: Vec<CalendarWithYearsMonth>,
+    /// The year's year-only rows — dates and ranges with no month — in
+    /// rule-12 order. Each row carries the full range text and extent, so
+    /// renderers shade the whole month span of the years it covers.
+    pub full_year: Vec<EventRow>,
+}
+
+/// One month cell of the calendar-with-years grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarWithYearsMonth {
+    /// 1–12.
+    pub month: u32,
+    /// The days with entries, ascending.
+    pub days: Vec<CalendarWithYearsDay>,
+}
+
+/// One day cell of the calendar-with-years grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarWithYearsDay {
+    /// 1–31.
+    pub day: u32,
+    /// The rows sitting on this date cell in rule-12 order. Ranges place
+    /// here at their start cell and keep their full extent (rule 11).
+    pub entries: Vec<EventRow>,
+}
+
 /// Build one of the plan's views from a resolved, filtered event stream.
 ///
 /// Every event is expanded once per subject (one row per (event, subject),
@@ -98,12 +199,47 @@ pub struct CalendarDay {
 /// kind sorts them (rule 12), the `Calendar` kind filters to anchored rows
 /// and groups them by their effective (month, day) cell (rules 1/3, D6).
 pub fn build_view(events: &[ResolvedEvent], kind: ViewKind, opts: &ReportOptions) -> View {
-    let rows = expand_rows(events, opts);
     match kind {
-        ViewKind::List => View::List(ListView {
-            rows: sort_list_rows(rows),
-        }),
-        ViewKind::Calendar => View::Calendar(build_calendar(rows)),
+        ViewKind::List => {
+            let rows = expand_rows(events, opts);
+            View::List(ListView {
+                rows: sort_list_rows(rows),
+            })
+        }
+        ViewKind::Calendar => View::Calendar(build_calendar(expand_rows(events, opts))),
+        ViewKind::Timeline => View::Timeline(build_timeline(expand_rows(events, opts))),
+        // The calendar-with-years places rows on the Gregorian year grid;
+        // the five non-converted calendars have no Gregorian placement
+        // (D4) and year-less events are excluded (rule 13), so the stream
+        // is filtered before expansion.
+        ViewKind::CalendarWithYears => {
+            let mut placeable: Vec<ResolvedEvent> = Vec::new();
+            for event in events {
+                if placeable_on_year_grid(event) {
+                    placeable.push(event.clone());
+                }
+            }
+            View::CalendarWithYears(build_calendar_with_years(expand_rows(&placeable, opts)))
+        }
+    }
+}
+
+/// May [`ResolvedEvent::event`]'s rows be placed on the calendar-with-years
+/// Gregorian grid (plan §8 rule 11)? Every Gregorian-calendar date — full,
+/// month-only or year-only (year-only rows land in the year's `full_year`
+/// list) — and every Julian date that normalizes; never the five
+/// non-converted calendars (decision D4, no anchor per rule 1) and never
+/// year-less events (rule 13).
+fn placeable_on_year_grid(event: &ResolvedEvent) -> bool {
+    match event.date.as_ref() {
+        None => false,
+        Some(date) => {
+            if event.gregorian.is_some() {
+                true
+            } else {
+                date.calendar == Calendar::Gregorian
+            }
+        }
     }
 }
 
@@ -115,9 +251,12 @@ pub fn view(events: &[ResolvedEvent], kind: ViewKind, opts: &ReportOptions) -> V
 
 /// Flatten any view back to the flat [`EventRow`] contract (plan §7.3).
 ///
-/// The list returns its sorted rows; the calendar returns its entries in
-/// calendar order — (month, day, event type, subject, event id), plan §8
-/// rule 12.
+/// The list and the timeline return their rows in rule-12 order (the
+/// timeline's group concatenation reproduces the ordered stream); the
+/// calendar returns its entries in calendar order — (month, day, event
+/// type, subject, event id); the calendar-with-years returns its rows in
+/// the rule-12 (start date, type, subject, id) order — the same relative
+/// order the list gives its year-bearing rows (rule 12).
 pub fn rows(view: &View) -> Vec<EventRow> {
     match view {
         View::List(list) => list.rows.clone(),
@@ -129,6 +268,28 @@ pub fn rows(view: &View) -> Vec<EventRow> {
                 }
             }
             out
+        }
+        View::Timeline(timeline) => {
+            let mut out = Vec::new();
+            for year in &timeline.years {
+                out.extend(year.rows.iter().cloned());
+            }
+            out
+        }
+        View::CalendarWithYears(calendar) => {
+            let mut out = Vec::new();
+            for year in &calendar.years {
+                out.extend(year.full_year.iter().cloned());
+                for month in &year.months {
+                    for day in &month.days {
+                        out.extend(day.entries.iter().cloned());
+                    }
+                }
+            }
+            // The grid walks (year, month, day) cell order; rule 12 wants
+            // the (start date, type, subject, id) key — the same sort the
+            // list applies, so year-bearing list rows keep their order.
+            sort_list_rows(out)
         }
     }
 }
@@ -309,11 +470,114 @@ fn calendar_sort_key(row: &EventRow) -> (u32, u32, &str, &str, &str) {
         row.event_id.as_deref().unwrap_or(""),
     )
 }
+
+/// Build the timeline (plan §8 rules 10 and 13).
+///
+/// The rows keep the plan's deterministic order — (start date ascending,
+/// event type, primary subject, event id) with year-less rows terminal
+/// (rule 12) — and are chunked into ascending year groups on that order.
+/// The year-less tail becomes the terminal "Undated" group (rule 13);
+/// ranges/spans stay whole in their row (extent fields unchanged), so
+/// renderers draw them as bars from their start to their stop (D11).
+fn build_timeline(rows: Vec<EventRow>) -> TimelineView {
+    let sorted = sort_list_rows(rows);
+    let mut years: Vec<TimelineYear> = Vec::new();
+    for row in sorted {
+        let is_new_group = match years.last() {
+            None => true,
+            Some(last) => last.year != row.year,
+        };
+        if is_new_group {
+            years.push(TimelineYear {
+                year: row.year,
+                rows: Vec::new(),
+            });
+        }
+        years
+            .last_mut()
+            .expect("a group was pushed above")
+            .rows
+            .push(row);
+    }
+    TimelineView { years }
+}
+
+/// Build the calendar-with-years (plan §8 rule 11 / D12).
+///
+/// Year-bearing rows keep the plan's rule-12 order and are placed on the
+/// grid: a row with a month sits on its actual date cell — (month, day),
+/// or (month, 1) when the day is unknown (rule 3) — and a row without a
+/// month (year-only dates and year-only ranges) lands in its start year's
+/// `full_year` list, carrying the full start → stop extent for the grid
+/// shading. The grid spans every year from its earliest to its latest row.
+/// Year-less rows are never placed (rule 13).
+fn build_calendar_with_years(rows: Vec<EventRow>) -> CalendarWithYearsView {
+    let mut with_year: Vec<EventRow> = rows.into_iter().filter(|row| row.year.is_some()).collect();
+    if with_year.is_empty() {
+        return CalendarWithYearsView { years: Vec::new() };
+    }
+    with_year.sort_by(|a, b| list_sort_key(a).cmp(&list_sort_key(b)));
+    let first_year = with_year
+        .first()
+        .expect("non-empty")
+        .year
+        .expect("rows have a year");
+    let last_year = with_year
+        .last()
+        .expect("non-empty")
+        .year
+        .expect("rows have a year");
+
+    let mut years: Vec<CalendarWithYearsYear> = Vec::new();
+    let mut cursor = 0;
+    for offset in 0..(last_year - first_year + 1) {
+        let year = first_year + offset;
+        let mut months: Vec<CalendarWithYearsMonth> = Vec::new();
+        let mut full_year: Vec<EventRow> = Vec::new();
+        while cursor < with_year.len() && with_year[cursor].year == Some(year) {
+            let row = with_year[cursor].clone();
+            cursor += 1;
+            match row.month {
+                None => full_year.push(row),
+                Some(month) => {
+                    // Anchor rule 3: a month without a day lands on day 1.
+                    let day = row.day.unwrap_or(1);
+                    if months.last().map(|last| last.month) != Some(month) {
+                        months.push(CalendarWithYearsMonth {
+                            month,
+                            days: Vec::new(),
+                        });
+                    }
+                    let month_cell = months.last_mut().expect("pushed above");
+                    if month_cell.days.last().map(|last| last.day) != Some(day) {
+                        month_cell.days.push(CalendarWithYearsDay {
+                            day,
+                            entries: Vec::new(),
+                        });
+                    }
+                    month_cell
+                        .days
+                        .last_mut()
+                        .expect("pushed above")
+                        .entries
+                        .push(row);
+                }
+            }
+        }
+        years.push(CalendarWithYearsYear {
+            year,
+            months,
+            full_year,
+        });
+    }
+    CalendarWithYearsView { years }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::collect_events;
     use crate::options::LeapDayPolicy;
+    use gramps_dates::{Calendar, GrampsDate, Modifier, NewYear, Quality};
     use gramps_xml::parse_database;
 
     const DATA_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/data.gramps");
@@ -413,6 +677,22 @@ mod tests {
         let db = parse_database(xml).unwrap();
         let events = collect_events(&db, opts);
         rows(&view(&events, ViewKind::Calendar, opts))
+    }
+
+    /// Build the timeline rows for `xml` under `opts` — rule-12 order
+    /// (identical to the list's row stream).
+    fn timeline_rows<'a>(xml: &'a [u8], opts: &'a ReportOptions) -> Vec<EventRow> {
+        let db = parse_database(xml).unwrap();
+        let events = collect_events(&db, opts);
+        rows(&view(&events, ViewKind::Timeline, opts))
+    }
+
+    /// Build the calendar-with-years rows for `xml` under `opts` — rule-12
+    /// (start date, type, subject, id) order over the year-bearing rows.
+    fn yrcal_rows<'a>(xml: &'a [u8], opts: &'a ReportOptions) -> Vec<EventRow> {
+        let db = parse_database(xml).unwrap();
+        let events = collect_events(&db, opts);
+        rows(&view(&events, ViewKind::CalendarWithYears, opts))
     }
 
     /// The compact row fingerprint for golden tables — every contract
@@ -931,5 +1211,548 @@ mod tests {
         let idx_v8 = a.iter().position(|row| row == ada_v8).unwrap();
         let idx_v9 = a.iter().position(|row| row == ada_v9).unwrap();
         assert!(idx_v8 < idx_v9);
+    }
+
+    // --- milestone 9: the year-based views (timeline, calendar-with-years)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn timeline_groups_under_year_headers_with_a_terminal_undated_group() {
+        let opts = run_opts();
+        let db = parse_database(VIEWS_XML).unwrap();
+        let events = collect_events(&db, &opts);
+        let View::Timeline(timeline) = view(&events, ViewKind::Timeline, &opts) else {
+            unreachable!("Timeline kind");
+        };
+        // Ascending year headers, the year-less events (V5 text, V6 undated)
+        // closing the timeline in the terminal "Undated" group (rule 13).
+        assert_eq!(
+            timeline
+                .years
+                .iter()
+                .map(|year| year.year)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(1970),
+                Some(1988),
+                Some(1990),
+                Some(1995),
+                Some(1998),
+                Some(2000),
+                None,
+            ],
+        );
+        let ids = |year: &TimelineYear| {
+            year.rows
+                .iter()
+                .map(|row| fp(row).0.expect("fixture rows carry event ids"))
+                .collect::<Vec<_>>()
+        };
+        // Equal start dates tie-break by (type, subject, id): V8 before V9.
+        assert_eq!(ids(&timeline.years[0]), vec!["V8", "V9"]);
+        // The 1988–1989 couple range expands to both spouses with its full
+        // extent intact.
+        assert_eq!(ids(&timeline.years[1]), vec!["V3", "V3"]);
+        assert!(timeline.years[1].rows.iter().all(|row| row.date_is_range));
+        assert!(timeline.years[1].rows.iter().all(|row| row.month.is_none()));
+        // The orphan text and undated events close the timeline, sorted by
+        // (type, subject, id).
+        assert_eq!(ids(&timeline.years[6]), vec!["V5", "V6"]);
+        assert!(timeline.years[6].rows.iter().all(|row| row.year.is_none()));
+        assert!(
+            timeline.years[6]
+                .rows
+                .iter()
+                .all(|row| row.person_name == "—")
+        );
+    }
+
+    #[test]
+    fn timeline_range_rows_keep_their_full_extent_for_bars() {
+        let opts = run_opts();
+        let db = parse_database(DATES_GRAMPS).unwrap();
+        let events = collect_events(&db, &opts);
+        let View::Timeline(timeline) = view(&events, ViewKind::Timeline, &opts) else {
+            unreachable!("Timeline kind");
+        };
+        let in_group = |row: &EventRow, id: &str| fp(row).0.as_deref() == Some(id);
+        // D0017 (1914-07-28 → 1918-11-11) sits in the 1914 group carrying
+        // both ISO endpoints — the bar geometry (rule 10, D11).
+        let group_1914 = timeline
+            .years
+            .iter()
+            .find(|year| year.year == Some(1914))
+            .unwrap();
+        let ww1 = group_1914
+            .rows
+            .iter()
+            .find(|row| in_group(row, "D0017"))
+            .unwrap();
+        assert_eq!(ww1.year, Some(1914));
+        assert_eq!(ww1.event_date, Some("1914-07-28".to_string()));
+        assert_eq!(ww1.event_date_stop, Some("1918-11-11".to_string()));
+        assert!(ww1.date_is_range);
+        // D0019 (1822–1824, year-only) is a full-year-width bar: the start
+        // year only, no month, and the full range text carries the stop.
+        let group_1822 = timeline
+            .years
+            .iter()
+            .find(|year| year.year == Some(1822))
+            .unwrap();
+        let year_range = group_1822
+            .rows
+            .iter()
+            .find(|row| in_group(row, "D0019"))
+            .unwrap();
+        assert_eq!(year_range.year, Some(1822));
+        assert_eq!(year_range.month, None);
+        assert!(year_range.date_is_range);
+        assert!(year_range.event_date_text.contains("1824"));
+        // The text-only date closes the timeline in the Undated group.
+        let undated = timeline.years.last().expect("terminal undated group");
+        assert_eq!(undated.year, None);
+        assert_eq!(undated.rows.len(), 1);
+        assert_eq!(fp(&undated.rows[0]).0, Some("D0024".to_string()));
+    }
+
+    #[test]
+    fn calendar_with_years_is_a_contiguous_year_grid_of_actual_date_cells() {
+        let opts = run_opts();
+        let db = parse_database(VIEWS_XML).unwrap();
+        let events = collect_events(&db, &opts);
+        let View::CalendarWithYears(calendar) = view(&events, ViewKind::CalendarWithYears, &opts)
+        else {
+            unreachable!("CalendarWithYears kind");
+        };
+        // The grid covers every year from the earliest to the latest row
+        // (rule 11) — 1970 through 2000 is 31 years (the private 2001
+        // event is filtered before the view is built).
+        assert_eq!(calendar.years.len(), 31);
+        assert_eq!(calendar.years.first().expect("grid").year, 1970);
+        assert_eq!(calendar.years.last().expect("grid").year, 2000);
+        // Feb 29 sits on its actual date cell — the D6 fold only shifts the
+        // anniversary anchor, never the grid cell — and stays labeled.
+        let year_2000 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 2000)
+            .unwrap();
+        assert_eq!(
+            year_2000
+                .months
+                .iter()
+                .map(|month| (month.month, month.days[0].day, month.days[0].entries.len()))
+                .collect::<Vec<_>>(),
+            vec![(2, 29, 1)],
+        );
+        assert!(year_2000.months[0].days[0].entries[0].leap_day_folded);
+        // Month-only V1 lands on (4, 1) per anchor rule 3.
+        let year_1995 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1995)
+            .unwrap();
+        assert_eq!(year_1995.months[0].month, 4);
+        assert_eq!(year_1995.months[0].days[0].day, 1);
+        assert_eq!(
+            fp(&year_1995.months[0].days[0].entries[0]).0,
+            Some("V1".to_string())
+        );
+        // The Immigration range V4 (1998-03 → 1998-05) lands at its start
+        // cell and keeps the full extent text (rule 11).
+        let year_1998 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1998)
+            .unwrap();
+        assert_eq!(year_1998.months[0].month, 3);
+        assert_eq!(year_1998.months[0].days[0].day, 1);
+        let v4 = &year_1998.months[0].days[0].entries[0];
+        assert_eq!(fp(v4).0, Some("V4".to_string()));
+        assert!(v4.date_is_range);
+        assert!(v4.event_date_text.contains("1998-05"));
+        // Year-only rows land in full_year: the 1988–1989 couple range and
+        // the 1990 birth.
+        let year_1988 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1988)
+            .unwrap();
+        assert_eq!(year_1988.full_year.len(), 2);
+        assert!(year_1988.full_year.iter().all(|row| row.month.is_none()));
+        assert!(year_1988.full_year.iter().all(|row| row.date_is_range));
+        let year_1990 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1990)
+            .unwrap();
+        assert_eq!(year_1990.full_year.len(), 1);
+        assert!(year_1990.full_year[0].month.is_none());
+        // An empty middle year is still a grid year.
+        let year_1971 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1971)
+            .unwrap();
+        assert_eq!(year_1971.months.len(), 0);
+        assert_eq!(year_1971.full_year.len(), 0);
+    }
+
+    #[test]
+    fn calendar_with_years_places_full_extent_ranges_and_excludes_the_unplaceable() {
+        let opts = run_opts();
+        let rows = yrcal_rows(DATES_GRAMPS, &opts);
+        let ids = rows
+            .iter()
+            .map(|row| fp(row).0.expect("fixture rows carry event ids"))
+            .collect::<Vec<_>>();
+        // Only Gregorian-placeable rows appear: the five non-converted
+        // calendars (D4), the text-only date and any year-less row (rule
+        // 13) are never placed.
+        for id in [
+            "D0000", "D0001", "D0002", "D0003", "D0004", "D0005", "D0006", "D0007", "D0008",
+            "D0009", "D0010", "D0016", "D0017", "D0018", "D0019", "D0020", "D0021", "D0022",
+            "D0023",
+        ] {
+            assert!(ids.iter().any(|x| x.as_str() == id), "{id} must be placed");
+        }
+        for id in ["D0011", "D0012", "D0013", "D0014", "D0015", "D0024"] {
+            assert!(!ids.iter().any(|x| x.as_str() == id), "{id} must be absent");
+        }
+
+        let db = parse_database(DATES_GRAMPS).unwrap();
+        let events = collect_events(&db, &opts);
+        let View::CalendarWithYears(calendar) = view(&events, ViewKind::CalendarWithYears, &opts)
+        else {
+            unreachable!("CalendarWithYears kind");
+        };
+        // Grid endpoints: -550 (D0008) through 2000 (D0000).
+        assert_eq!(calendar.years.len(), 2551);
+        assert_eq!(calendar.years.first().expect("grid").year, -550);
+        assert_eq!(calendar.years.last().expect("grid").year, 2000);
+        // The full-extent range D0017 sits at its start cell (1914, 7, 28).
+        let year_1914 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1914)
+            .unwrap();
+        let july = year_1914
+            .months
+            .iter()
+            .find(|month| month.month == 7)
+            .unwrap();
+        assert_eq!(july.days[0].day, 28);
+        assert_eq!(fp(&july.days[0].entries[0]).0, Some("D0017".to_string()));
+        assert_eq!(
+            july.days[0].entries[0].event_date_stop,
+            Some("1918-11-11".to_string()),
+        );
+        // The month-only Birth and month-only range share cell
+        // (1822, 11, 1), the Birth first by type (rule 12).
+        let year_1822 = calendar
+            .years
+            .iter()
+            .find(|year| year.year == 1822)
+            .unwrap();
+        let november = year_1822
+            .months
+            .iter()
+            .find(|month| month.month == 11)
+            .unwrap();
+        assert_eq!(november.days[0].day, 1);
+        assert_eq!(
+            fp(&november.days[0].entries[0]).0,
+            Some("D0007".to_string())
+        );
+        assert_eq!(
+            fp(&november.days[0].entries[1]).0,
+            Some("D0018".to_string())
+        );
+        assert!(november.days[0].entries[1].date_is_range);
+        // The year-only date and the year-only range land in full_year,
+        // Birth before Marriage (rule 12).
+        assert_eq!(year_1822.full_year.len(), 2);
+        assert_eq!(fp(&year_1822.full_year[0]).0, Some("D0006".to_string()));
+        let d0019 = &year_1822.full_year[1];
+        assert_eq!(fp(d0019).0, Some("D0019".to_string()));
+        assert_eq!(d0019.month, None);
+        assert!(d0019.date_is_range);
+        assert!(d0019.event_date_text.contains("1824"));
+    }
+
+    #[test]
+    fn view_kind_and_view_cover_all_four_views() {
+        let opts = run_opts();
+        let db = parse_database(VIEWS_XML).unwrap();
+        let events = collect_events(&db, &opts);
+        let v_list = view(&events, ViewKind::List, &opts);
+        let v_cal = view(&events, ViewKind::Calendar, &opts);
+        let v_tl = view(&events, ViewKind::Timeline, &opts);
+        let v_yrcal = view(&events, ViewKind::CalendarWithYears, &opts);
+        match v_list {
+            View::List(_) => (),
+            _ => unreachable!("List kind"),
+        }
+        match v_cal {
+            View::Calendar(_) => (),
+            _ => unreachable!("Calendar kind"),
+        }
+        match v_tl {
+            View::Timeline(_) => (),
+            _ => unreachable!("Timeline kind"),
+        }
+        match v_yrcal {
+            View::CalendarWithYears(_) => (),
+            _ => unreachable!("CalendarWithYears kind"),
+        }
+        // Timeline rows are the list rows; yrcal keeps only the
+        // year-bearing ones; the anniversary calendar its anchored ones.
+        let list = rows(&v_list);
+        assert_eq!(list.len(), 10);
+        assert_eq!(rows(&v_tl), list);
+        assert_eq!(rows(&v_yrcal).len(), 8);
+        assert_eq!(rows(&v_cal).len(), 5);
+    }
+
+    #[test]
+    fn timeline_and_yrcal_flatten_in_rule_12_order() {
+        let opts = run_opts();
+        // The timeline row stream is exactly the list's (rules 10 + 12).
+        assert_eq!(timeline_rows(VIEWS_XML, &opts), list_rows(VIEWS_XML, &opts));
+        assert_eq!(
+            timeline_rows(DATES_GRAMPS, &opts),
+            list_rows(DATES_GRAMPS, &opts)
+        );
+        // The yrcal keeps the list's year-bearing rows in the same order.
+        let list = list_rows(VIEWS_XML, &opts);
+        let placeable = list
+            .iter()
+            .filter(|row| row.year.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(yrcal_rows(VIEWS_XML, &opts), placeable);
+    }
+
+    #[test]
+    fn year_based_views_are_deterministic() {
+        let opts = run_opts();
+        let db = parse_database(DATES_GRAMPS).unwrap();
+        let events = collect_events(&db, &opts);
+        assert_eq!(
+            rows(&view(&events, ViewKind::Timeline, &opts)),
+            rows(&view(&events, ViewKind::Timeline, &opts)),
+        );
+        assert_eq!(
+            rows(&view(&events, ViewKind::CalendarWithYears, &opts)),
+            rows(&view(&events, ViewKind::CalendarWithYears, &opts)),
+        );
+    }
+
+    // --- property tests: ordering and grid invariants under random input
+    // -----------------------------------------------------------------------
+
+    // The `proptest::prelude` root shadows nothing of the crate CLI; it
+    // provides the `prop` module and the `proptest!` macro.
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The timeline flattens back to exactly the list's row stream:
+        /// grouping under year headers and the terminal "Undated" group
+        /// reorder nothing (plan §8 rules 10, 12, 13).
+        #[test]
+        fn timeline_rows_equal_list_rows(
+            events in prop::collection::vec(gen_event(), 0..20)
+        ) {
+            let opts = run_opts();
+            prop_assert_eq!(
+                rows(&build_view(&events, ViewKind::Timeline, &opts)),
+                rows(&build_view(&events, ViewKind::List, &opts)),
+            );
+        }
+
+        /// The calendar-with-years keeps exactly the year-bearing rows (all
+        /// generated events are Gregorian, so every year-bearing row is
+        /// placeable), in the same rule-12 order as the list (plan §8 rules
+        /// 11–12).
+        #[test]
+        fn calendar_with_years_rows_are_year_bearing_list_rows(
+            events in prop::collection::vec(gen_event(), 0..20)
+        ) {
+            let opts = run_opts();
+            let list = rows(&build_view(&events, ViewKind::List, &opts));
+            let with_years = list
+                .iter()
+                .filter(|row| row.year.is_some())
+                .cloned()
+                .collect::<Vec<_>>();
+            prop_assert_eq!(
+                rows(&build_view(&events, ViewKind::CalendarWithYears, &opts)),
+                with_years,
+            );
+        }
+
+        /// Timeline year groups are sound: every row's year matches its
+        /// group header, dated groups ascend, and the year-less "Undated"
+        /// group is last.
+        #[test]
+        fn timeline_year_groups_match_their_rows(
+            events in prop::collection::vec(gen_event(), 0..20)
+        ) {
+            let opts = run_opts();
+            let View::Timeline(timeline) = build_view(&events, ViewKind::Timeline, &opts) else {
+                unreachable!("Timeline kind");
+            };
+            for (index, group) in timeline.years.iter().enumerate() {
+                for row in &group.rows {
+                    prop_assert_eq!(row.year, group.year);
+                }
+                if index > 0 {
+                    let prev = &timeline.years[index - 1];
+                    prop_assert!(year_rank(prev.year) <= year_rank(group.year));
+                }
+            }
+        }
+
+        /// The year grid is contiguous — every year between its first and
+        /// its last appears exactly once (rule 11) — and every row lands in
+        /// a cell or `full_year` list of its own year: year-only rows in
+        /// `full_year`, month-bearing rows on cells that ascend by
+        /// (month, day).
+        #[test]
+        fn calendar_with_years_grid_is_contiguous_and_sorted(
+            events in prop::collection::vec(gen_event(), 0..20)
+        ) {
+            let opts = run_opts();
+            let View::CalendarWithYears(calendar) =
+                build_view(&events, ViewKind::CalendarWithYears, &opts) else {
+                unreachable!("CalendarWithYears kind");
+            };
+            let first = calendar.years.first().map(|year| year.year);
+            for (index, year) in calendar.years.iter().enumerate() {
+                prop_assert_eq!(
+                    year.year,
+                    first.expect("non-empty grid") + (index as i32),
+                );
+                for row in &year.full_year {
+                    prop_assert_eq!(row.year, Some(year.year));
+                    prop_assert!(row.month.is_none());
+                }
+                let mut last_month = 0;
+                for month in &year.months {
+                    prop_assert!(month.month > last_month);
+                    last_month = month.month;
+                    let mut last_day = 0;
+                    for day in &month.days {
+                        prop_assert!(day.day > last_day);
+                        last_day = day.day;
+                        for row in &day.entries {
+                            prop_assert_eq!(row.year, Some(year.year));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Strategy args for a generated event: (kind, year, month, day,
+    /// offset) — `kind` picks the date shape, `offset` the range length.
+    /// Years stay in the 20th/21st century so the calendar-with-years grid
+    /// span stays small; months/days use the partial-date convention
+    /// (0 = unknown) via the stored components only.
+    fn gen_event_args() -> impl Strategy<Value = (u32, i32, u32, u32, i32)> {
+        (0u32..=5, 1900i32..=2025, 1u32..=12, 1u32..=28, 0i32..=5)
+    }
+
+    /// A strategy of random resolved events for the year-based view
+    /// properties.
+    fn gen_event() -> impl Strategy<Value = ResolvedEvent> {
+        gen_event_args().prop_map(build_event)
+    }
+
+    /// Build one generated resolved event — Gregorian only, so every
+    /// event is placeable on the year grid — with the date kind varying
+    /// over undated / year-only / month-only / full / range(full) /
+    /// range(year-only). `gregorian` stays `None` (the view derives the
+    /// year/month/day from the stored components, exactly the partial-date
+    /// fallback real parsing produces for non-full dates).
+    fn build_event(args: (u32, i32, u32, u32, i32)) -> ResolvedEvent {
+        let (kind, year, month, day, offset) = args;
+        let stop_year = year + offset;
+        let (date, anniversary) = match kind {
+            0u32 => (None, None),
+            1 => (Some(synthetic_date((year, 0, 0), None)), None),
+            2 => (
+                Some(synthetic_date((year, month, 0), None)),
+                Some((month, 1)),
+            ),
+            3 => (
+                Some(synthetic_date((year, month, day), None)),
+                Some((month, day)),
+            ),
+            4 => {
+                let stop = (stop_year, month, day);
+                (
+                    Some(synthetic_date((year, month, day), Some(stop))),
+                    Some((month, day)),
+                )
+            }
+            _ => {
+                let stop = (stop_year, 0, 0);
+                (Some(synthetic_date((year, 0, 0), Some(stop))), None)
+            }
+        };
+        ResolvedEvent {
+            event_type: match kind % 3 {
+                0 => "Birth".to_string(),
+                1 => "Marriage".to_string(),
+                _ => "Immigration".to_string(),
+            },
+            event_id: Some(format!("E{}-{}-{}", kind, year, month)),
+            date,
+            gregorian: None,
+            subjects: vec![PersonDisplay {
+                gramps_id: None,
+                handle: "prop-1".to_string(),
+                name: "P".to_string(),
+                role: "Primary".to_string(),
+            }],
+            role: "Primary".to_string(),
+            place_path: None,
+            private: false,
+            orphan: false,
+            elapsed_years: None,
+            anniversary,
+            leap_day_folded: false,
+            age_at_event: None,
+        }
+    }
+
+    /// A synthetic Gregorian date for the property generator — plain
+    /// fields, no parsing involved. Ranges get `Modifier::Range` so
+    /// `is_range()` reports them as such (rule 2).
+    fn synthetic_date(ymd: (i32, u32, u32), stop: Option<(i32, u32, u32)>) -> GrampsDate {
+        GrampsDate {
+            calendar: Calendar::Gregorian,
+            modifier: if stop.is_some() {
+                Modifier::Range
+            } else {
+                Modifier::None
+            },
+            quality: Quality::None,
+            ymd,
+            stop,
+            dual_dated: false,
+            new_year: NewYear::Jan1,
+            display: "date".to_string(),
+        }
+    }
+
+    /// Rank an optional year for ordering checks — year-less (the
+    /// "Undated" group) sorts after every real year.
+    fn year_rank(year: Option<i32>) -> i64 {
+        match year {
+            None => 200000,
+            Some(y) => y as i64,
+        }
     }
 }

@@ -31,8 +31,18 @@
 //! - [`views::build_view`] / [`views::view`] / [`views::rows`] — the
 //!   `ListView` and `CalendarView` builders (the milestone-8 views) and the
 //!   flatten back to `EventRow`; anchor rules 1/3 (month → day 1, year-only
-//!   excluded) and the Feb 29 fold (D6) land here. The year-based views
-//!   (`Timeline`, `CalendarWithYears`) arrive in milestone 9.
+//!   excluded) and the Feb 29 fold (D6) land here.
+//!
+//! Milestone 9 adds the year-based views (§8 rules 10–13, D11/D12):
+//!
+//! - [`views::TimelineView`] — chronological groups under year headers,
+//!   range rows keeping their full start → stop extent for the D11 bars,
+//!   and the terminal "Undated" group for year-less rows (rule 13);
+//! - [`views::CalendarWithYearsView`] — the year-by-year month grid
+//!   covering the span of the event data; rows sit on their actual date
+//!   cells and year-only rows land in their year's `full_year` list;
+//! - the `Timeline` / `CalendarWithYears` variants of [`views::ViewKind`]
+//!   and [`views::View`], and deterministic rule-12 output order for both.
 
 pub mod model;
 pub mod options;
@@ -47,7 +57,9 @@ pub use pipeline::{age_at_event, elapsed_years, probably_alive};
 pub use resolve::{HandleIndex, build_index, collect_events};
 pub use row::EventRow;
 pub use views::{
-    CalendarDay, CalendarMonth, CalendarView, ListView, View, ViewKind, build_view, rows, view,
+    CalendarDay, CalendarMonth, CalendarView, CalendarWithYearsDay, CalendarWithYearsMonth,
+    CalendarWithYearsView, CalendarWithYearsYear, ListView, TimelineView, TimelineYear, View,
+    ViewKind, build_view, rows, view,
 };
 
 /// Canonical crate name — smoke tests (and later workspace integration
