@@ -1,28 +1,40 @@
-# Implementation Plan: Gramps Events Report
+# Implementation Plan: Fix Blank PDF Export (bundled fonts for Typst)
 
-Source: `docs/research/gramps-events-architecture.md`
+Source: `docs/research/fix-blank-pdf-export.md`
 
-Reorders the plan's §12 milestones per two confirmed adjustments:
-**dates-first ordering** (`gramps-dates` is a leaf crate consumed by `gramps-xml`, so it is built before the XML parser, avoiding deferred date fields) and **view builders split into two steps** (each step stays a small, independently testable unit).
-
-> The repository is not yet a git repository; the first commit (`git init -b main`, then the plan documents) precedes step 1.
+Fixes the `gramps-events` PDF export producing **valid but blank** PDFs (both
+web `GET /api/export?format=pdf` and CLI `report --format pdf`, which share
+`TypstPdf` in `crates/writers/src/pdf.rs`). Root cause confirmed: the workspace
+pins `typst-assets = "=0.14.2"` **without** its `fonts` feature, so
+`typst_assets::fonts()` returns an empty iterator, `PdfWorld` builds an empty
+`FontBook`, and every text glyph is silently dropped at layout while the
+12-page structure survives. Confirmed decisions (2026-10-01): deliver plan
+only, bundle typst's fonts (~9 MB growth) rather than system-font lookup, and
+include hardening so a blank-PDF regression can never ship silently again.
+Existing plan for the original project is superseded by this one.
 
 ## Steps
 
 | # | Commit message | Logical unit | Key deliverables | Tests |
 | --- | --- | --- | --- | --- |
-| 1 | chore: scaffold cargo workspace with crate skeletons and fixtures | Workspace scaffold | workspace `Cargo.toml`, `crates/{gramps-xml,gramps-dates,event-core,writers,cli,web}/`, `rustfmt.toml`, `.gitignore`, `tests/fixtures/` (copy of `data.gramps` + crafted edge-case XML: date forms, ranges, spans, partial/BC/non-Gregorian dates, orphans, family events, multi-role, private, unknown sections, zipped/gzipped containers) | Smoke |
-| 2 | feat: add GrampsDate core model and dateval parsing | Core date model | `crates/gramps-dates/src/{lib,model,parse}.rs` — `GrampsDate`, `Calendar`, `Modifier`, `Quality`, `NewYear`, `DateError`, partial-date convention (month/day 0), `dateval` parsing | Unit |
-| 3 | feat: parse range, span and text dates and normalize calendars | Date normalization | `crates/gramps-dates/` — `daterange`/`datespan`/`datestr` parsing, display strings, pin **jiff**, SDN Gregorian/Julian conversion (`to_gregorian`, `start`, `stop`, `anniversary_key`, `year`, `is_range`), non-Gregorian text fallback with warning | Unit, Property |
-| 4 | feat: detect gramps containers and parse a minimal database | Container + skeleton parser | `crates/gramps-xml/` — `parse_database`, container detection (plain XML / gzip via flate2 / zip via zip), `Database` with `Event`/`Person`/`Family`/`Place` skeleton (with wired `GrampsDate`), `GrampsXmlError`, handle index; corrupt-container decode errors | Unit |
-| 5 | feat: parse full gramps records with links and privacy | Full record parsing | `crates/gramps-xml/` — person names (multiple names, surname prefix/prim), eventref roles, family members, place hierarchy, privacy flags, `header`/`tags`, unknown-element/attribute tolerance | Unit |
-| 6 | feat: resolve events to subjects in event-core | Subject resolution | `crates/event-core/` — index building (handle → record), `ResolvedEvent`, `collect_events`, subject resolution order (primary role → any role → family couple → single ref → orphan "—"), place paths, `PersonDisplay` | Unit |
-| 7 | feat: compute derived values and apply the filtering pipeline | Derived values + filtering | `crates/event-core/` — `ReportOptions`, type include/exclude precedence (exclusion wins), person/date-range/living-only (`probably_alive` port)/private filters, `elapsed_years`, `age_at_event`, leap-day fold policy (D6), anniversary keys | Unit |
-| 8 | feat: add EventRow contract with list and anniversary calendar views | List + calendar views | `crates/event-core/` — `EventRow` (flat writer contract incl. `event_date_stop`, `date_is_range`, `leap_day_folded`), `ListView`, `CalendarView` (anchor rules 1/3: month→day 1, year-only excluded, Feb 29 fold), `view`/`rows()` | Unit, Golden |
-| 9 | feat: add timeline and calendar-with-years views | Year-based views | `crates/event-core/` — `TimelineView` (chronological, range bars start→stop, undated group), `CalendarWithYearsView` (year-by-year grid, full-extent ranges), `View`/`ViewKind` extension, deterministic output order | Unit, Property |
-| 10 | feat: add csv, json and parquet writers | Row writers | `crates/writers/` — `EventWriter` trait, `CsvWriter`, `JsonWriter`, `ParquetWriter` (arrow-rs 60), `Formats` bitflag, `WriterError`, atomic temp-file → rename | Unit, Property |
-| 11 | feat: add typst pdf writer | PDF writer | `crates/writers/` — `PdfDocument` model + `build_pdf_document`, `PdfBackend` trait, `TypstPdf` renderer (calendar month pages, title, reference year), `%PDF` magic + page-count check | Unit |
-| 12 | feat: add report, list and inspect CLI commands | CLI | `crates/cli/` — clap derive: `inspect` (type/count enumeration), `list` with `--view` (all four views incl. `yrcal`), `report` with all filters + `--format` combos/`all`, `--out-dir`/`--out-prefix`, `--reference-year`; single command produces all four files | Snapshot, Unit |
-| 13 | feat: serve gramps events over a local web api | Web API + skeleton UI | `crates/web/` — axum 0.8 bound to 127.0.0.1, routes (`/`, `/api/load`, `/api/options`, `/api/events`, `/api/events.json`, `/api/export`, `/api/reset`), 200 MB upload cap + generated temp names + cleanup, askama landing page, vendored htmx, escaping-regression test | Integration |
-| 14 | feat: build the full four-view web ui | Web UI | `crates/web/` — four tabs (list, anniversary calendar, calendar-with-years, timeline) rendered by the shared view builders, event-type checkboxes with counts, orphan/privacy/leap-day toggles, export button group, CSS range bars, styling | Integration |
-| 15 | chore: harden errors and document the project | Hardening + docs | error-message polish, empty/error fixtures, generated large-file benchmark (~100k events) with time/memory budget, `README.md`, `docs/ARCHITECTURE.md`, DTD-structure attribution, §11.1 acceptance checklist pass | Unit, Integration |
+| 1 | fix: enable bundled fonts for the typst pdf renderer | Dependency change | `Cargo.toml` (workspace): change `typst-assets = "=0.14.2"` to `{ version = "=0.14.2", features = ["fonts"] }`, update the affected `#` comment | Unit |
+| 2 | fix: fail fast on an empty font book in the pdf renderer | Invariant guard | `crates/writers/src/pdf.rs` — `PdfWorld::new` returns `Result<Self, WriterError>`; empty `FontBook`/`fonts` vector maps to `WriterError::Pdf("no fonts loaded — the typst-assets `fonts` feature is disabled")`; `TypstPdf::compile` propagates with `?` | Unit |
+| 3 | test: assert typed pdf pages contain text | Regression tests | `crates/writers/src/pdf.rs` — compiled-frames content test (page 1 contains title + at least one entry `Text`); end-to-end content test asserting a raw `/Font` resource ref (raw-byte probe, not `Tj`/`TJ` operator scan); `crates/web/tests/api.rs` — mandatory web check that the exported PDF is not blank (raw `/Font` probe on response bytes) | Unit, Integration |
+| 4 | feat: surface typst compile warnings on RenderedPdf | Warning surfacing | `crates/writers/src/pdf.rs` — add `warnings: Vec<String>` to `RenderedPdf`, populate from `warned.warnings` in `compile`; update construction sites (`render`), `PartialEq`/`Eq` derive, and affected tests | Unit |
+| 5 | docs: document the pdf fonts feature fix | Docs | `docs/ARCHITECTURE.md` — note the `fonts` feature requirement and ~9 MB cost in the writers/PDF section, link the fix plan, keep D2 text accurate, refresh the now-stale §11 sentence claiming askama/static assets are the only embedded non-code files (bundled fonts become embedded binary data) | — |
+
+## Notes
+
+- **Ordering rationale**: step 1 flips the dependency feature that the empty-book
+  guard (step 2), content tests (step 3) and warning surfacing (step 4) all
+  depend on. Steps 1–2 contain the fix; 3–4 lock the regression out; 5 documents
+  why the flag is mandatory.
+- **Warning surfacing chooses option A** (store on `RenderedPdf`, keep error
+  path non-fatal) per plan §5.2 recommendation — typst emits benign warnings in
+  ordinary docs, so only the empty-font-book condition is a hard error.
+- **Content test discriminator**: search raw bytes for `/Font` / `FontFile`
+  (written uncompressed); do **not** scan for text operators `Tj`/`TJ`/`BT…ET`
+  because typst-pdf 0.14.2 FlateDecode-compresses every content stream.
+- Step 3's web check runs only once `crates/web` builds against the fixed
+  renderer; step 4's golden warning test asserts the bundled default compiles
+  with no `unknown font family` warning once `RenderedPdf.warnings` exists.
