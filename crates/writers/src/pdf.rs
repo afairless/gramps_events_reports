@@ -255,7 +255,7 @@ impl TypstPdf {
     /// diagnostics. The generated markup is internal (never user input),
     /// so a compile failure here means the renderer regressed.
     pub fn compile(&self, doc: &PdfDocument) -> Result<RenderedPdf, WriterError> {
-        let world = PdfWorld::new(build_markup(doc));
+        let world = PdfWorld::new(build_markup(doc))?;
         let warned = typst::compile::<PagedDocument>(&world);
         let document = warned.output.map_err(|diagnostics| {
             WriterError::Pdf(format!(
@@ -380,19 +380,38 @@ struct PdfWorld {
 }
 
 impl PdfWorld {
-    /// Build a world around the generated `markup` string.
-    fn new(markup: String) -> Self {
+    /// Build a world around the generated `markup` string, loading the
+    /// bundled fonts. Fails fast if none registered — an empty font book
+    /// silently drops every text glyph at layout (valid-but-blank PDFs),
+    /// so the renderer refuses to compile rather than emit a blank
+    /// document.
+    fn new(markup: String) -> Result<Self, WriterError> {
         let fonts: Vec<Font> = typst_assets::fonts()
             .filter_map(|data| Font::new(Bytes::new(data), 0))
             .collect();
         let book = FontBook::from_fonts(&fonts);
+        Self::with_fonts(markup, fonts, book)
+    }
+
+    /// Assemble a world from already-loaded `fonts`, enforcing the
+    /// invariant that the font book is never empty: without fonts every
+    /// text glyph is silently dropped at layout, so this is a hard error
+    /// rather than a blank export. The explicit-font seam lets tests poke
+    /// the guard — with the bundled-font feature on, `new`'s failure
+    /// branch is unreachable.
+    fn with_fonts(markup: String, fonts: Vec<Font>, book: FontBook) -> Result<Self, WriterError> {
+        if fonts.is_empty() {
+            return Err(WriterError::Pdf(
+                "no fonts loaded — the typst-assets `fonts` feature is disabled".to_string(),
+            ));
+        }
         let main = Source::new(FileId::new(None, VirtualPath::new("main.typ")), markup);
-        Self {
+        Ok(Self {
             library: LazyHash::new(Library::default()),
             book: LazyHash::new(book),
             fonts,
             main,
-        }
+        })
     }
 }
 
@@ -649,7 +668,7 @@ mod tests {
         // The workspace enables typst-assets' `fonts` feature; without it
         // `typst_assets::fonts()` yields an empty iterator and every text
         // glyph is silently dropped at layout (blank-PDF regression).
-        let world = PdfWorld::new("".to_string());
+        let world = PdfWorld::new("".to_string()).expect("bundled fonts must load");
         assert!(
             !world.fonts.is_empty(),
             "the typst-assets `fonts` feature must load bundled fonts"
@@ -674,6 +693,23 @@ mod tests {
             )
             .is_some(),
             "Libertinus Serif must resolve from the font book"
+        );
+    }
+
+    #[test]
+    fn empty_font_book_fails_fast_instead_of_rendering_blank_pages() {
+        // The guard branch in `new` is unreachable once fonts are bundled
+        // (`bundled_fonts_fill_the_worlds_font_book` proves they load),
+        // so poke the invariant through the explicit-font seam with an
+        // empty vector — the blank-PDF regression's precise precondition.
+        let err = PdfWorld::with_fonts("".to_string(), Vec::new(), FontBook::new())
+            .expect_err("an empty font book must be rejected, not rendered blank");
+        let WriterError::Pdf(msg) = &err else {
+            panic!("expected WriterError::Pdf, got {err}");
+        };
+        assert_eq!(
+            msg,
+            "no fonts loaded — the typst-assets `fonts` feature is disabled"
         );
     }
 
