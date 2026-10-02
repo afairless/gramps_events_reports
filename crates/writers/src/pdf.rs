@@ -440,6 +440,7 @@ mod tests {
     use event_core::{CalendarDay, CalendarMonth, CalendarView};
     use std::fs;
     use tempfile::TempDir;
+    use typst::text::{FontStretch, FontStyle, FontVariant, FontWeight};
 
     /// A row with a fixed anniversary anchor (calendar-view rows carry the
     /// effective anchor after the fold, D6).
@@ -641,6 +642,39 @@ mod tests {
         assert_eq!(typst_string("plain"), "\"plain\"");
         assert_eq!(typst_string("say \"hi\""), "\"say \\\"hi\\\"\"");
         assert_eq!(typst_string("a\\b"), "\"a\\\\b\"");
+    }
+
+    #[test]
+    fn bundled_fonts_fill_the_worlds_font_book() {
+        // The workspace enables typst-assets' `fonts` feature; without it
+        // `typst_assets::fonts()` yields an empty iterator and every text
+        // glyph is silently dropped at layout (blank-PDF regression).
+        let world = PdfWorld::new("".to_string());
+        assert!(
+            !world.fonts.is_empty(),
+            "the typst-assets `fonts` feature must load bundled fonts"
+        );
+
+        // The generated markup sets `font: "Libertinus Serif"`, so the
+        // family must resolve from the book exactly as `TypstPdf` will
+        // look it up at layout.
+        let book = FontBook::from_fonts(&world.fonts);
+        assert!(
+            book.contains_family("libertinus serif"),
+            "Libertinus Serif must be registered in the font book"
+        );
+        assert!(
+            book.select(
+                "libertinus serif",
+                FontVariant::new(
+                    FontStyle::default(),
+                    FontWeight::default(),
+                    FontStretch::default(),
+                ),
+            )
+            .is_some(),
+            "Libertinus Serif must resolve from the font book"
+        );
     }
 
     #[test]

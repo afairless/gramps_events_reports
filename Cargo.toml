@@ -51,8 +51,11 @@ typst = "=0.14.2"
 typst-pdf = "=0.14.2"
 # The PdfWorld font book is fed by typst's bundled fonts (Libertinus
 # Serif + friends) so `TypstPdf` needs no system font lookup and stays
-# deterministic across machines.
-typst-assets = "=0.14.2"
+# deterministic across machines. The `fonts` feature must stay enabled:
+# without it `typst_assets::fonts()` returns an empty iterator, the
+# renderer builds an empty font book, and every text glyph is silently
+# dropped at layout (blank PDFs).
+typst-assets = { version = "=0.14.2", features = ["fonts"] }
 # Web API + skeleton UI (milestone 13, plan §6.4/D1): axum 0.8 with the
 # `multipart` feature for the size-capped upload route; askama 0.16
 # server-rendered templates (HTML-escaped by default); tokio is the
