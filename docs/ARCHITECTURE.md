@@ -42,7 +42,7 @@ gramps-dates ──▶ gramps-xml ──▶ event-core ──▶ writers
 | `gramps-dates` | The Gramps date model: the four interchangeable date element forms (`dateval`/`daterange`/`datespan`/`datestr`), modifiers, quality, seven-calendar enum, display strings, Gregorian/Julian normalization via SDN, anniversary keys, leap-day fold semantics (D6). Civil-date math uses **jiff** (§6.2 of the plan). | — | `GrampsDate`, `Calendar`, `Modifier`, `Quality`, `NewYear`, `DateError` |
 | `gramps-xml` | `.gramps` container detection (plain XML / gzip / zip §3.1) and the XML → typed model mapping. The DTD is the spec; records carry `handle`s, not resolved links. Recoverable defects warn-and-skip into `Database::warnings`; hard errors (missing/duplicate handle, reversed range) abort with a named record/position. | `gramps-dates` | `Database`, `Event`, `Person`, `Family`, `Place`, `Header`, `Tag`, `GrampsXmlError` |
 | `event-core` | The engine: `handle → record` index (plus the inverse eventref index, §5 below), subject resolution with the precedence order, derived values, the `ReportOptions` filter pipeline, the four view builders, the flat `EventRow` writer contract and the `PdfDocument` document model. | `gramps-xml`, `gramps-dates` | `HandleIndex`, `ResolvedEvent`, `PersonDisplay`, `ReportOptions`, `LeapDayPolicy`, `View`, `ViewKind`, `ListView`, `CalendarView`, `TimelineView`, `CalendarWithYearsView`, `EventRow` |
-| `writers` | Output backends behind traits: `EventWriter` (csv / json / parquet) with the `Formats` bitflag; `PdfBackend` (typst) rendering `PdfDocument`. Every writer is atomic: render to a temp file in the destination dir, rename over the destination only on success. | `event-core` | `EventWriter`, `CsvWriter`, `JsonWriter`, `ParquetWriter`, `Formats`, `PdfBackend`, `TypstPdf`, `PdfDocument`, `WriterError` |
+| `writers` | Output backends behind traits: `EventWriter` (csv / json / parquet) with the `Formats` bitflag; `PdfBackend` (typst) rendering `PdfDocument`. Every writer is atomic: render to a temp file in the destination dir, rename over the destination only on success. The typst renderer requires the `fonts` Cargo feature on `typst-assets` — a mandatory flag that embeds ~9 MB of font data into the binary; without it `typst_assets::fonts()` returns an empty iterator and PDF export compiles **valid but blank** documents (every glyph silently dropped). See D2 for the PDF-engine decision and the [fix plan](research/fix-blank-pdf-export.md) for the root cause, hardening and verification. | `event-core` | `EventWriter`, `CsvWriter`, `JsonWriter`, `ParquetWriter`, `Formats`, `PdfBackend`, `TypstPdf`, `PdfDocument`, `WriterError` |
 | `cli` | clap 4 derive surface: `inspect`, `list`, `report`, `serve`. One binary ships CLI + GUI (§6.5); `report` runs the full workflow with any `--format` combination. | `event-core`, `writers`, `web` | `Cli`, `Command`, `CommonFilters`, `ViewArg`, `FormatArg` |
 | `web` | axum 0.8 server bound to **127.0.0.1** (D1): size-capped upload, options, view fragments, JSON dump and export routes; server-rendered UI with vendored htmx. | `event-core`, `writers` | `ServeConfig`, `AppState`, `router`, `handlers` |
 | `benchgen` | Deterministic generator (fixed-seed SplitMix64) for the ~100k-event benchmark fixture — no multi-MB XML is committed. Test-only. | — (output parses through `gramps-xml`) | `BenchOptions`, `generate` |
@@ -344,8 +344,10 @@ the export button group all drive the same options object.
   (200 MB) before reading into memory, stored under generated temp names in
   a temp dir, and deleted on reset/exit. HTML output is auto-escaped by
   Askama (locked by the escaping regression test).
-- No secrets are handled by this tool; askama templates and vendored static
-  assets are the only embedded non-code files.
+- No secrets are handled by this tool. Embedded non-code data is the askama
+  templates, the vendored static assets, and the bundled typst fonts — the
+  font data (~9 MB, binary) is pulled in by the `fonts` feature on
+  `typst-assets` (see the writers crate in §1 and the [fix plan](research/fix-blank-pdf-export.md)).
 - Writers use atomic rename so concurrent or aborted exports do not corrupt
   final files; outputs land only in `--out-dir` on the machine running the
   command.
