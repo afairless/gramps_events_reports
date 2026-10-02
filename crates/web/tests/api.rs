@@ -864,6 +864,36 @@ async fn export_streams_every_format_as_a_download() {
 }
 
 #[tokio::test]
+async fn exported_pdf_is_not_blank() {
+    // Mandatory web-side lock on the writers-crate content guarantee: the
+    // export route must serve a PDF that embeds fonts. Font objects and
+    // page resource dictionaries are written uncompressed, so a raw
+    // `/Font` byte probe discriminates the blank-PDF regression (0 hits —
+    // empty font book, no drawn text) from a real export, while the
+    // FlateDecode-compressed content streams make a `Tj`/`TJ` scan
+    // useless even on a correct PDF.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, headers, body) = call(
+        &app,
+        request(Method::GET, "/api/export?format=pdf", None, &[], Vec::new()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/pdf")
+    );
+    assert!(
+        body.to_vec().windows(5).any(|w| w == b"/Font"),
+        "the exported PDF must embed font resources (/Font)"
+    );
+}
+
+#[tokio::test]
 async fn export_unknown_format_is_400_and_missing_format_is_400() {
     let (app, _state) = setup(UPLOAD_CAP_BYTES);
     let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;

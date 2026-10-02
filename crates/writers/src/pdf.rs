@@ -459,6 +459,7 @@ mod tests {
     use event_core::{CalendarDay, CalendarMonth, CalendarView};
     use std::fs;
     use tempfile::TempDir;
+    use typst::layout::{Frame, FrameItem};
     use typst::text::{FontStretch, FontStyle, FontVariant, FontWeight};
 
     /// A row with a fixed anniversary anchor (calendar-view rows carry the
@@ -713,6 +714,26 @@ mod tests {
         );
     }
 
+    /// Depth-first collect the plain text of every laid-out text run in
+    /// `frame` (plan §5.3 test 2). Content nests arbitrarily, so recurse
+    /// through [`FrameItem::Group`] children and collect the string of
+    /// every [`FrameItem::Text`] run.
+    fn frame_texts(frame: &Frame) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (_, item) in frame.items() {
+            match item {
+                FrameItem::Text(text) => out.push(text.text.as_str().to_string()),
+                FrameItem::Group(group) => {
+                    for nested in frame_texts(&group.frame) {
+                        out.push(nested);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     #[test]
     fn render_pdf_has_magic_and_the_twelve_calendar_pages() {
         let opts = ReportOptions::with_reference_year(2026);
@@ -731,6 +752,67 @@ mod tests {
         );
         // One page per month — the Gramps report shape.
         assert_eq!(rendered.pages, 12, "one page per calendar month");
+    }
+
+    #[test]
+    fn compiled_frames_contain_the_title_and_entry_text() {
+        // The blank-PDF regression's telltale: the 12 pages exist but the
+        // laid-out frames hold no text at all. Compile the document and
+        // walk page 1's frame — the title block shares January's page —
+        // requiring the title, the month header *and* at least one entry
+        // text run. With the empty font book that produced blank pages,
+        // every glyph is dropped and no `Text` item ever appears.
+        let opts = ReportOptions::with_reference_year(2026);
+        let doc = build_pdf_document(&calendar_view(), &opts);
+
+        let world = PdfWorld::new(build_markup(&doc)).expect("bundled fonts must load");
+        let warned = typst::compile::<PagedDocument>(&world);
+        let document = warned.output.expect("typst must compile the report");
+        assert_eq!(document.pages.len(), 12, "one page per calendar month");
+
+        let page_1_texts = frame_texts(&document.pages[0].frame);
+        let page_1_preview = page_1_texts.join(" · ");
+        assert!(
+            page_1_texts
+                .iter()
+                .any(|t| t.contains("Gramps Events — Anniversary Calendar")),
+            "page 1 must contain the report title: {page_1_preview}"
+        );
+        assert!(
+            page_1_texts
+                .iter()
+                .any(|t| t.contains("Alice — Birth (2020-01-14)")),
+            "page 1 must contain at least one entry text run: {page_1_preview}"
+        );
+        assert!(
+            page_1_texts.iter().any(|t| t.contains("January")),
+            "page 1 must contain its month header: {page_1_preview}"
+        );
+    }
+
+    #[test]
+    fn compiled_pdf_bytes_embed_font_resources() {
+        // End-to-end content probe (plan §5.3 test 3): font objects and
+        // page resource dictionaries are written uncompressed, so a raw
+        // `/Font` / `FontFile` byte search discriminates the fixed export
+        // (26 `/Font` hits) from the blank-PDF regression (0 hits — an
+        // empty font book embeds no fonts). Content streams are
+        // FlateDecode-compressed by typst-pdf 0.14.2, so text-showing
+        // operators (`Tj`/`TJ`) are deliberately not scanned for.
+        let opts = ReportOptions::with_reference_year(2026);
+        let doc = build_pdf_document(&calendar_view(), &opts);
+        let rendered = TypstPdf
+            .compile(&doc)
+            .expect("typst must compile the report");
+
+        assert!(
+            rendered.bytes.windows(5).any(|w| w == b"/Font"),
+            "the PDF must embed font resources (/Font)"
+        );
+        assert!(
+            rendered.bytes.windows(8).any(|w| w == b"FontFile"),
+            "the PDF must embed font program data (FontFile)"
+        );
     }
 
     #[test]
