@@ -225,15 +225,21 @@ fn format_elapsed(elapsed: Option<i32>) -> String {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TypstPdf;
 
-/// The renderer's output: the PDF bytes plus the laid-out page count.
-/// Exposed so callers (and tests) can check the page structure of what
-/// gets written.
+/// The renderer's output: the PDF bytes, the laid-out page count, and
+/// any non-fatal diagnostics typst emitted while compiling. Exposed so
+/// callers (and tests) can check the page structure of what gets written
+/// and inspect what typst warned about (plan §5.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedPdf {
     /// The complete PDF file bytes (`%PDF-…%%EOF`).
     pub bytes: Vec<u8>,
     /// The number of laid-out pages.
     pub pages: usize,
+    /// Non-fatal typst compile warnings, one string per diagnostic —
+    /// e.g. `warning: unknown font family: libertinus serif`. Warnings
+    /// never fail a compile (only errors do), so callers can log or
+    /// inspect them without losing the rendered output.
+    pub warnings: Vec<String>,
 }
 
 impl PdfBackend for TypstPdf {
@@ -249,13 +255,27 @@ impl PdfBackend for TypstPdf {
 }
 
 impl TypstPdf {
-    /// Compile `doc` into PDF bytes and report the laid-out page count.
+    /// Compile `doc` into PDF bytes and report the laid-out page count
+    /// plus any typst warnings.
     ///
     /// Failures surface as [`WriterError::Pdf`] carrying the typst
     /// diagnostics. The generated markup is internal (never user input),
-    /// so a compile failure here means the renderer regressed.
+    /// so a compile failure here means the renderer regressed. Warnings —
+    /// e.g. an unresolvable font family — never fail the compile; they
+    /// land on [`RenderedPdf::warnings`] for callers to surface (plan
+    /// §5.2).
     pub fn compile(&self, doc: &PdfDocument) -> Result<RenderedPdf, WriterError> {
-        let world = PdfWorld::new(build_markup(doc))?;
+        Self::compile_markup(build_markup(doc))
+    }
+
+    /// Compile raw Typst markup into [`RenderedPdf`]: the pipeline behind
+    /// [`TypstPdf::compile`] — build the world, compile, export, and
+    /// collect the compile warnings. The markup seam exists so the
+    /// warning path is testable: the public entry's generated markup
+    /// always names a bundled font family, which produces no
+    /// diagnostics.
+    fn compile_markup(markup: String) -> Result<RenderedPdf, WriterError> {
+        let world = PdfWorld::new(markup)?;
         let warned = typst::compile::<PagedDocument>(&world);
         let document = warned.output.map_err(|diagnostics| {
             WriterError::Pdf(format!(
@@ -272,6 +292,12 @@ impl TypstPdf {
         Ok(RenderedPdf {
             pages: document.pages.len(),
             bytes,
+            warnings: warned
+                .warnings
+                .as_slice()
+                .iter()
+                .map(format_diagnostic)
+                .collect(),
         })
     }
 }
@@ -345,19 +371,29 @@ fn typst_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Render one compiler diagnostic as a human-readable string, e.g.
+/// `warning: unknown font family: libertinus serif`, appended by any
+/// hints. [`RenderedPdf::warnings`] carries one such string per warning;
+/// the error paths join them with [`format_diagnostics`].
+fn format_diagnostic(d: &SourceDiagnostic) -> String {
+    let severity = match d.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+    };
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!("{severity}: {}", d.message));
+    for hint in &d.hints {
+        parts.push(format!("hint: {hint}"));
+    }
+    parts.join("; ")
+}
+
 /// Join a compiler/export diagnostic list into one human-readable
 /// message.
 fn format_diagnostics(diagnostics: &[SourceDiagnostic]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for d in diagnostics {
-        let severity = match d.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        };
-        parts.push(format!("{severity}: {}", d.message));
-        for hint in &d.hints {
-            parts.push(format!("hint: {hint}"));
-        }
+        parts.push(format_diagnostic(d));
     }
     parts.join("; ")
 }
@@ -812,6 +848,54 @@ mod tests {
         assert!(
             rendered.bytes.windows(8).any(|w| w == b"FontFile"),
             "the PDF must embed font program data (FontFile)"
+        );
+    }
+
+    #[test]
+    fn bundled_default_surfaces_no_unknown_font_family_warning() {
+        // The blank-PDF regression's telltale diagnostic was `unknown
+        // font family: libertinus serif` — emitted at warning severity
+        // and previously discarded by `compile`. With the `fonts` feature
+        // on, the golden report must compile with no such warning
+        // surfacing on the render result (plan §5.3 test 4).
+        let opts = ReportOptions::with_reference_year(2026);
+        let doc = build_pdf_document(&calendar_view(), &opts);
+        let rendered = TypstPdf
+            .compile(&doc)
+            .expect("typst must compile the report");
+
+        assert!(
+            rendered
+                .warnings
+                .iter()
+                .all(|w| !w.contains("unknown font family")),
+            "the bundled default must not warn about missing fonts: {}",
+            rendered.warnings.join(" · ")
+        );
+    }
+
+    #[test]
+    fn unknown_font_family_warning_surfaces_on_rendered_pdf() {
+        // Asking for a font family the bundled book does not carry is a
+        // *warning* in typst — the compile succeeds with a fallback
+        // instead of failing — so it must land on `RenderedPdf.warnings`,
+        // visible to callers, rather than being discarded. The markup
+        // seam runs the exact pipeline `compile` runs.
+        let markup = "#set text(font: \"Nope Chocolate Regular\")\nHello".to_string();
+        let rendered = TypstPdf::compile_markup(markup)
+            .expect("an unknown font family must fall back, not fail the compile");
+
+        assert!(
+            rendered.bytes.starts_with(b"%PDF-"),
+            "the compile must still produce pdf bytes"
+        );
+        assert!(
+            rendered
+                .warnings
+                .iter()
+                .any(|w| w.contains("unknown font family")),
+            "warnings must expose the unknown font family diagnostic: {}",
+            rendered.warnings.join(" · ")
         );
     }
 
