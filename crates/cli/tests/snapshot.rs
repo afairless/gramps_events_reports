@@ -24,8 +24,15 @@ use writers::Formats;
 /// The datum fixture committed at the repository root (plan §11).
 const DATA_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/data.gramps");
 
+/// The damaged fixture (three malformed-date skips, decision D-a).
+const MALFORMED_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/malformed-dates.gramps");
+
 fn db() -> gramps_xml::Database {
     gramps_xml::parse_database(DATA_GRAMPS).unwrap()
+}
+
+fn malformed_db() -> gramps_xml::Database {
+    gramps_xml::parse_database(MALFORMED_GRAMPS).unwrap()
 }
 
 /// The fixed snapshot reference year — a non-leap year so Feb 29 folds are
@@ -112,4 +119,26 @@ fn report_all_snapshot() {
         .collect();
     let actual = format!("{}\n", names.join("\n"));
     assert_snapshot("report_all.snap", &actual);
+}
+
+/// `report --format all` on the damaged fixture: the same four files plus
+/// `{prefix}.errors.json` **last** (decision D-a) — locked as the ordered
+/// list of written filenames.
+#[test]
+fn report_all_malformed_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let written = run::report(
+        &malformed_db(),
+        &opts(),
+        Formats::ALL,
+        dir.path(),
+        "damaged",
+    )
+    .unwrap();
+    let names: Vec<String> = written
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    let actual = format!("{}\n", names.join("\n"));
+    assert_snapshot("report_all_malformed.snap", &actual);
 }

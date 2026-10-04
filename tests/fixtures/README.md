@@ -20,6 +20,7 @@ tests. All fixtures are **read-only inputs** — tests never write here.
 | `garbage.gramps` | Plain text, no XML markup and no recognized container magic → `GrampsXmlError::UnknownContainer` with a byte preview |
 | `empty-database.gramps` | Well-formed `<database>` with an empty body → parses successfully with 0 events (the CLI reports "0 events" rather than erroring) |
 | `warnings.gramps` | Parses successfully; two records warn-and-skip (bad `priority` on a tag, bad `gender` on a person) so `Database::warnings` is non-empty |
+| `malformed-dates.gramps` | Parses successfully; three events skip for malformed dates (reversed `daterange`, reversed `datespan`, invalid `dateval`) so `Database::date_issues` is non-empty and `report` writes `{prefix}.errors.json` |
 | `containers/data.gramps.gz` | The `data.gramps` fixture gzipped → parses to the identical database |
 | `containers/tree.gramps.zip` | A zip archive whose only member is `data.gramps` (a Gramps "saved tree") → parses to the identical database |
 | `containers/truncated.gramps.gz` | The first half of `data.gramps.gz` → `GrampsXmlError::GzipDecode` (truncated stream) |

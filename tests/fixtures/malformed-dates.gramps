@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<!--
+  Fixture: malformed date elements (the "warn/skip + error report"
+  contract, plan §3.1 as amended: reversed ranges are no longer a hard
+  error). Every broken-date event is omitted from the database, warned
+  about, and recorded structurally in Database.date_issues — the source
+  of the {prefix}.errors.json the report command writes:
+   - a <daterange> whose stop sorts before its start (E0000);
+   - a <datespan> whose stop sorts before its start (E0001);
+   - a <dateval> with an invalid month value (E0002).
+  One well-formed Birth event survives so the report pipeline still emits
+  rows next to the error report, and its subject person keeps the
+  document well-linked.
+-->
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-09-29" version="5.1.6"/>
+  </header>
+  <events>
+    <event handle="_e0" change="100" id="E0000">
+      <type>Death</type>
+      <daterange start="1918" stop="1914"/>
+    </event>
+    <event handle="_e1" change="101" id="E0001">
+      <type>Death</type>
+      <datespan start="2000-01-01" stop="1999-12-31"/>
+    </event>
+    <event handle="_e2" change="102" id="E0002">
+      <type>Birth</type>
+      <dateval val="1822-13"/>
+    </event>
+    <event handle="_e3" change="103" id="E0003">
+      <type>Birth</type>
+      <dateval val="1950-01-15"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_p0" change="200" id="P0000">
+      <gender>F</gender>
+      <name type="Birth Name">
+        <first>Ada</first>
+        <surname>Lovelace</surname>
+      </name>
+      <eventref hlink="_e3" role="Primary"/>
+    </person>
+  </people>
+</database>

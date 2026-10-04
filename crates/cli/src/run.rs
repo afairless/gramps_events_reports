@@ -6,9 +6,10 @@
 //! `build_view`); `list` renders the chosen view as text and `report`
 //! hands the flat rows to the writers (csv / json / parquet) and the PDF
 //! document to the PDF backend — one command producing all four files
-//! (plan §11.1 acceptance 4). `serve` delegates to `web::serve`, so the
-//! GUI shares every line of core logic with the CLI and ships in the
-//! same binary (plan §6.5).
+//! (plan §11.1 acceptance 4) — plus `{prefix}.errors.json` when any event
+//! was skipped for a malformed date (plan §3.2, decision D-a). `serve`
+//! delegates to `web::serve`, so the GUI shares every line of core logic
+//! with the CLI and ships in the same binary (plan §6.5).
 
 use std::path::Path;
 
@@ -57,8 +58,11 @@ pub fn list(db: &Database, opts: &ReportOptions, kind: ViewKind) -> String {
 ///
 /// CSV / JSON / Parquet serialize the flat [`event_core::EventRow`]
 /// contract; PDF is built from the same view via
-/// [`writers::build_pdf_document`]. Returns the paths written, in the
-/// deterministic format order (csv, json, parquet, pdf — plan §8 rule 12).
+/// [`writers::build_pdf_document`]. When at least one event was skipped
+/// for a malformed date, `{prefix}.errors.json` is also written through
+/// the same atomic machinery (plan §3.2, decision D-a). Returns the paths
+/// written: the formats in deterministic order (csv, json, parquet, pdf
+/// — plan §8 rule 12), then the error report last.
 pub fn report(
     db: &Database,
     opts: &ReportOptions,
@@ -94,7 +98,64 @@ pub fn report(
         }
         written.push(dest);
     }
+
+    // The malformed-date error report: written only when at least one
+    // event was skipped for a bad date, and appended **last** so the CLI
+    // echoes it in a deterministic position after the format files (plan
+    // §3.2, decision D-a — "only when at least one event was skipped").
+    if !db.date_issues.is_empty() {
+        let dest = out_dir.join(format!("{out_prefix}.errors.json"));
+        writers::write_date_issues(&db.date_issues, &dest)
+            .with_context(|| format!("failed to write {}", dest.display()))?;
+        written.push(dest);
+    }
     Ok(written)
+}
+
+/// The stderr text reporting the events skipped for a malformed date:
+/// one line per [`gramps_xml::DateIssue`] in document order, phrased like
+/// the parser's own warning, e.g.
+///
+/// ```text
+/// skipping event E0000: malformed daterange date (daterange/datespan stop "1914" sorts before start "1918")
+/// ```
+///
+/// The issue message embeds raw text from the parsed file, so every line
+/// is stripped of ASCII control characters (`U+0000`–`U+001F` and `U+007F`,
+/// including ESC) before it is returned — a hostile `.gramps` file cannot
+/// inject terminal escape sequences into the log (plan §3.2). Returns an
+/// empty string when there is nothing to report; `main.rs` sends the
+/// result to stderr for `inspect`, `list` and `report`.
+pub fn print_date_issues(db: &Database) -> String {
+    let mut out = String::new();
+    for issue in &db.date_issues {
+        let line = sanitize(&format!(
+            "skipping event {}: malformed {} date ({})",
+            issue.event_id, issue.date_kind, issue.message
+        ));
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Drop every ASCII control character — `U+0000`–`U+001F` (including ESC)
+/// and `U+007F` (DEL) — so hostile message text cannot smuggle terminal
+/// escape sequences into the log while still slipping through as
+/// visible text. Non-ASCII characters (e.g. `é`) are untouched.
+fn sanitize(line: &str) -> String {
+    let mut out = String::new();
+    for c in line.chars() {
+        if !is_ascii_control(c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// True for the ASCII control characters: `U+0000`–`U+001F` and `U+007F`.
+fn is_ascii_control(c: char) -> bool {
+    c <= '\u{1f}' || c == '\u{7f}'
 }
 
 /// `serve`: start the web UI on 127.0.0.1:port — the CLI form of the GUI
@@ -135,9 +196,41 @@ mod tests {
     use event_core::LeapDayPolicy;
 
     const DATA_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/data.gramps");
+    const MALFORMED_GRAMPS: &[u8] =
+        include_bytes!("../../../tests/fixtures/malformed-dates.gramps");
 
     fn db() -> Database {
         gramps_xml::parse_database(DATA_GRAMPS).unwrap()
+    }
+
+    /// The damaged fixture: three events skip for malformed dates, one
+    /// well-formed Birth survives.
+    fn malformed_db() -> Database {
+        gramps_xml::parse_database(MALFORMED_GRAMPS).unwrap()
+    }
+
+    /// A database carrying only the two issues `print_date_issues` must
+    /// render — built directly so the test controls the exact text.
+    fn issues_db() -> Database {
+        Database {
+            date_issues: vec![
+                gramps_xml::DateIssue {
+                    event_handle: "_e0".to_string(),
+                    event_id: "E0000".to_string(),
+                    event_type: "Death".to_string(),
+                    date_kind: "daterange".to_string(),
+                    message: "stop \"1914\" sorts before start \"1918\"".to_string(),
+                },
+                gramps_xml::DateIssue {
+                    event_handle: "_e2".to_string(),
+                    event_id: "E0002".to_string(),
+                    event_type: String::new(),
+                    date_kind: "dateval".to_string(),
+                    message: "unrecognized month value: 13".to_string(),
+                },
+            ],
+            ..Default::default()
+        }
     }
 
     fn opts(reference_year: i32) -> ReportOptions {
@@ -181,6 +274,9 @@ mod tests {
         for p in &paths {
             assert!(p.exists(), "missing {p:?}");
         }
+        // data.gramps is clean: no malformed dates, so no error report
+        // (decision D-a — "written only when needed").
+        assert!(!dir.path().join("r.errors.json").exists());
         // CSV is a text file; JSON starts with '['; PDF starts with its
         // magic header; parquet starts with PAR1.
         let csv = std::fs::read_to_string(dir.path().join("r.csv")).unwrap();
@@ -191,6 +287,91 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-"));
         let parq = std::fs::read(dir.path().join("r.parquet")).unwrap();
         assert!(parq.starts_with(b"PAR1"));
+    }
+
+    /// `report` writes `{prefix}.errors.json` only when the database
+    /// actually has date issues (decision D-a), appending its path **last**
+    /// after csv/json/parquet/pdf so the CLI echoes it deterministically.
+    #[test]
+    fn report_writes_errors_json_only_when_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        // A damaged fixture: three malformed-date skips → the report IS
+        // written, in document order, with all five files present.
+        let paths = report(&malformed_db(), &opts(2030), Formats::ALL, dir.path(), "m").unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                dir.path().join("m.csv"),
+                dir.path().join("m.json"),
+                dir.path().join("m.parquet"),
+                dir.path().join("m.pdf"),
+                dir.path().join("m.errors.json"),
+            ]
+        );
+        for p in &paths {
+            assert!(p.exists(), "missing {p:?}");
+        }
+        // The report is an object that names every skipped event.
+        let raw = std::fs::read_to_string(dir.path().join("m.errors.json")).unwrap();
+        assert!(raw.starts_with("{"), "report must be an object: {raw}");
+        assert!(raw.contains("error_count"), "report: {raw}");
+        for damaged in ["E0000", "E0001", "E0002"] {
+            assert!(
+                raw.contains(damaged),
+                "report must mention {damaged}: {raw}"
+            );
+        }
+
+        // A clean fixture: no issues → no errors.json at all, four files.
+        let clean = tempfile::tempdir().unwrap();
+        let paths = report(&db(), &opts(2030), Formats::ALL, clean.path(), "c").unwrap();
+        assert_eq!(paths.len(), 4);
+        assert!(!clean.path().join("c.errors.json").exists());
+    }
+
+    /// `print_date_issues` renders one line per issue, phrased like the
+    /// parser's warning, and nothing at all for a clean database.
+    #[test]
+    fn print_date_issues_renders_one_line_per_issue() {
+        let out = print_date_issues(&issues_db());
+        assert!(out.contains(
+            "skipping event E0000: malformed daterange date (stop \"1914\" sorts before start \"1918\")\n"
+        ));
+        assert!(out.contains(
+            "skipping event E0002: malformed dateval date (unrecognized month value: 13)\n"
+        ));
+        assert!(print_date_issues(&db()).is_empty());
+    }
+
+    /// A hostile `.gramps` file can put control bytes in the raw text that
+    /// ends up in an issue message; none may reach the returned stderr text.
+    #[test]
+    fn print_date_issues_strips_ascii_control_characters() {
+        let db = Database {
+            date_issues: vec![gramps_xml::DateIssue {
+                event_handle: "_e9".to_string(),
+                event_id: "E0009".to_string(),
+                // ESC + "clear screen" sequence in the type, ESC + red,
+                // DEL, NUL, tab and an embedded newline in the message.
+                event_type: "Death\u{1b}[2J".to_string(),
+                date_kind: "daterange".to_string(),
+                message: "stop \"1914\"\u{1b}[31m red \u{7f}\u{0}\tnewline\ncuidado \u{e9}"
+                    .to_string(),
+            }],
+            ..Default::default()
+        };
+        let out = print_date_issues(&db);
+        // Every control byte is gone (the line terminator is added after
+        // sanitizing, so a message newline cannot split the line).
+        for control in ['\u{0}', '\u{1b}', '\u{7f}', '\t'] {
+            assert!(!out.contains(control), "control char {control:?} survived");
+        }
+        // Visible text (including the non-ASCII é) survives, joined onto
+        // the single line; the ESC sequences are inert literals.
+        assert!(out.contains(
+            "skipping event E0009: malformed daterange date (stop \"1914\"[31m red newlinecuidado é)\n"
+        ));
+        assert_eq!(out.lines().count(), 1, "one issue → one line");
     }
 
     #[test]
