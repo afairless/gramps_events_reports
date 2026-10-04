@@ -37,6 +37,37 @@ const DATA_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/data.gramps")
 // (plan §11).
 const DATES_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/dates.gramps");
 
+// The malformed-date fixture: three events skipped for broken date
+// elements (plan §3.1 — reversed ranges warn/skip instead of aborting) —
+// the summary's `date_errors` source (decision D-h).
+const MALFORMED_GRAMPS: &[u8] = include_bytes!("../../../tests/fixtures/malformed-dates.gramps");
+
+/// A minimal Gramps file whose single event carries a **malformed date**
+/// and hostile markup in every field the date-errors section renders: the
+/// `id` attribute and `<type>` text decode to real `<script>`-bearing
+/// strings, and the broken `dateval` value ends up quoted inside the
+/// `DateError` message — the escape-regression for the error section.
+/// `<b>oops</b>` is not a valid date, so the event is skipped and
+/// recorded in `date_issues` (plan §3.1), and the summary's `date_errors`
+/// DTO carries the decoded hostile strings.
+const MALFORMED_HOSTILE_GRAMPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE database PUBLIC "-//Gramps//DTD Gramps XML 1.7.1//EN"
+"http://gramps-project.org/xml/1.7.1/grampsxml.dtd">
+<database xmlns="http://gramps-project.org/xml/1.7.1/">
+  <header>
+    <created date="2026-01-01" version="5.1.6"/>
+    <researcher/>
+  </header>
+  <events>
+    <event handle="_e0" change="1" id="E&#60;X&#62;">
+      <type>&lt;script&gt;alert(1)&lt;/script&gt;</type>
+      <dateval val="&lt;b&gt;oops&lt;/b&gt;"/>
+    </event>
+  </events>
+  <people/>
+</database>
+"#;
+
 /// A minimal Gramps file carrying hostile markup in person names, event
 /// types and a text date — the escape-regression fixture: the decoded
 /// strings contain real `<script>` tags that must never reach any view
@@ -208,6 +239,9 @@ async fn load_returns_the_json_summary() {
             .all(|t| t["type"].is_string() && t["count"].is_u64())
     );
     assert!(types.iter().any(|t| t["type"] == "Birth"));
+    // A clean file has no malformed-date issues: the summary carries an
+    // empty `date_errors` list (decision D-h).
+    assert_eq!(value["date_errors"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -309,6 +343,97 @@ async fn load_rejects_unparseable_bytes_with_422() {
     assert!(text.contains("Gramps"));
     // the failed upload was cleaned up
     assert_eq!(std::fs::read_dir(state.temp_dir.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn load_json_carries_the_date_errors_from_malformed_dates() {
+    // Decision D-h: the load summary carries the same malformed-date
+    // issues the CLI writes as `{prefix}.errors.json` — one entry per
+    // skipped event in document order, with the report's field names
+    // (`event_id`, `event_handle`, `event_type`, `date_kind`, `message`).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, body) = load(&app, MALFORMED_GRAMPS, "malformed-dates.gramps").await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let errors = value["date_errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 3);
+    assert_eq!(errors[0]["event_id"], "E0000");
+    assert_eq!(errors[0]["event_handle"], "_e0");
+    assert_eq!(errors[0]["event_type"], "Death");
+    assert_eq!(errors[0]["date_kind"], "daterange");
+    assert_eq!(
+        errors[0]["message"],
+        "daterange/datespan stop \"1914\" sorts before start \"1918\""
+    );
+    assert_eq!(errors[1]["event_id"], "E0001");
+    assert_eq!(errors[1]["event_handle"], "_e1");
+    assert_eq!(errors[1]["date_kind"], "datespan");
+    assert_eq!(errors[2]["event_id"], "E0002");
+    assert_eq!(errors[2]["event_type"], "Birth");
+    assert_eq!(errors[2]["date_kind"], "dateval");
+    assert_eq!(errors[2]["message"], "invalid month 13: expected 0-12");
+}
+
+#[tokio::test]
+async fn main_page_shows_the_date_errors_escaped() {
+    // The date-errors section (plan §3.3): the loaded page names the
+    // skipped events — a count heading, then a table of `event id | type
+    // | message` — and Askama-escapes every field, so the hostile id,
+    // type and message come out as decimal character references, never
+    // raw markup.
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, body) = load(&app, MALFORMED_HOSTILE_GRAMPS.as_bytes(), "hostile.gramps").await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+
+    let (status, _, bytes) = call(&app, request(Method::GET, "/", None, &[], Vec::new())).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+    assert!(
+        text.contains("1 events were skipped because their dates are malformed"),
+        "heading: {text}"
+    );
+    assert!(
+        text.contains("E&#60;X&#62;"),
+        "hostile event id escaped: {text}"
+    );
+    assert!(
+        text.contains("&#60;script&#62;alert(1)&#60;/script&#62;"),
+        "hostile type escaped: {text}"
+    );
+    assert!(
+        text.contains("&#60;b&#62;oops&#60;/b&#62;"),
+        "hostile message text escaped: {text}"
+    );
+    assert!(!text.contains("E<X>"), "raw event id: {text}");
+    // The page legitimately ships its own `inline scripts (htmx, the
+    // view switcher), so the negative probe targets the *hostile*
+    // script text alone, not every `<script>` on the page.
+    assert!(
+        !text.contains("<script>alert(1)"),
+        "raw script markup: {text}"
+    );
+    assert!(!text.contains("<b>oops</b>"), "raw message markup: {text}");
+}
+
+#[tokio::test]
+async fn clean_file_renders_no_date_errors_section() {
+    // No malformed dates → no errors section: the loaded page carries no
+    // `date-errors` markup at all (plan §5).
+    let (app, _state) = setup(UPLOAD_CAP_BYTES);
+    let (status, _) = load(&app, DATA_GRAMPS, "data.gramps").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, bytes) = call(&app, request(Method::GET, "/", None, &[], Vec::new())).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        !text.contains("date-errors"),
+        "clean file renders no errors section: {text}"
+    );
+    assert!(
+        !text.contains("were skipped because their dates are malformed"),
+        "clean file renders no errors heading: {text}"
+    );
 }
 
 #[tokio::test]

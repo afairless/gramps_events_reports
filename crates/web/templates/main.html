@@ -5,6 +5,26 @@
       ({{ s.bytes }} bytes).</p>
   </section>
 
+  {% if !s.date_errors.is_empty() %}
+    <section class="date-errors">
+      <h3>{{ s.date_errors.len() }} events were skipped because their dates are malformed</h3>
+      <table class="date-errors">
+        <thead>
+          <tr><th>event id</th><th>type</th><th>message</th></tr>
+        </thead>
+        <tbody>
+          {% for e in s.date_errors %}
+            <tr>
+              <td>{{ e.event_id }}</td>
+              <td>{{ e.event_type }}</td>
+              <td>{{ e.message }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
   <form id="options" class="options"
         hx-put="/api/options" hx-trigger="change"
         hx-target="#events" hx-swap="outerHTML">

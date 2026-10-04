@@ -40,6 +40,29 @@ h4 { margin: 0.4rem 0; font-size: 0.9rem; color: #444; }
   border-radius: 6px;
 }
 
+/* ------------------------------------------------------- date-errors */
+
+.date-errors {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: #fdf3f5;
+  border: 1px solid #d9534f;
+  border-radius: 6px;
+}
+.date-errors h3 { margin: 0 0 0.4rem; color: #a94442; }
+
+table.date-errors {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 0.25rem;
+}
+.date-errors th, .date-errors td {
+  border: 1px solid var(--line);
+  padding: 0.3rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
 .options .controls {
   display: flex;
   flex-wrap: wrap;

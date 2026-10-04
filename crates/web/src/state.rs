@@ -88,6 +88,18 @@ impl LoadedDatabase {
             event_count: self.db.events.len(),
             people_count: self.db.people.len(),
             event_types: self.event_types.clone(),
+            date_errors: self
+                .db
+                .date_issues
+                .iter()
+                .map(|issue| DateIssueDto {
+                    event_id: issue.event_id.clone(),
+                    event_handle: issue.event_handle.clone(),
+                    event_type: issue.event_type.clone(),
+                    date_kind: issue.date_kind.clone(),
+                    message: issue.message.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -140,6 +152,37 @@ pub struct LoadedSummary {
     pub people_count: usize,
     /// The deterministic event-type enumeration.
     pub event_types: Vec<EventTypeCount>,
+    /// The malformed-date issues (decision D-h: the web UI shows them
+    /// from the load summary; there is no `errors.json` download).
+    pub date_errors: Vec<DateIssueDto>,
+}
+
+/// One malformed-date issue of the load summary — the web DTO mirrors the
+/// CLI's `{prefix}.errors.json` entry fields (plan §3.3). The ingestion
+/// field is named `date_issues`; `date_errors` here is the intentional
+/// presentation rename.
+///
+/// Serializes as `{"event_id": …, "event_handle": …, "event_type": …,
+/// "date_kind": …, "message": …}` — the same shape `POST /api/load`
+/// returns that the file report uses. Every field is a plain string;
+/// `message` and `event_type` embed raw text from the parsed file, so the
+/// Askama templates HTML-escape each one when rendering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DateIssueDto {
+    /// The Gramps id of the skipped event (`id="E0000"`); falls back to
+    /// the handle when the attribute is absent.
+    pub event_id: String,
+    /// The `<event>` handle.
+    pub event_handle: String,
+    /// The `<type>` text read before the skip — empty when the file
+    /// omits `<type>` entirely.
+    pub event_type: String,
+    /// The date element tag that failed: `dateval` | `daterange` |
+    /// `datespan` | `datestr`.
+    pub date_kind: String,
+    /// The [`DateError`] display string, e.g.
+    /// `daterange/datespan stop "1914" sorts before start "1918"`.
+    pub message: String,
 }
 
 #[cfg(test)]
