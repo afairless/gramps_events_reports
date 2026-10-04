@@ -79,8 +79,11 @@ pub struct PdfMonth {
 pub struct PdfDay {
     /// 1–31.
     pub day: u32,
-    /// The entries on this day, in rule-12 calendar order (event type,
-    /// subject, event id).
+    /// The entries on this day, in the anniversary-calendar order the
+    /// UI/CLI calendar uses — the shared
+    /// [`event_core::compare_calendar_rows`] comparator: month-only
+    /// dates first, then chronologically (earliest year first), with the
+    /// rule-12 tie-breakers (event type, subject, event id) at the end.
     pub entries: Vec<PdfEntry>,
 }
 
@@ -117,21 +120,21 @@ pub trait PdfBackend {
 /// anchor (year-only dates, non-convertible calendars, undated and
 /// text-only events) never appear. All twelve month pages are present —
 /// each lists only the days that have entries — and the entries of a day
-/// follow the rule-12 calendar order (event type, subject, event id).
+/// follow the shared [`event_core::compare_calendar_rows`] order, so the
+/// PDF matches the UI/CLI anniversary calendar exactly (the PDF is built
+/// from the list view and sorts itself).
 pub fn build_pdf_document(view: &View, opts: &ReportOptions) -> PdfDocument {
-    // Gather the anchored rows per (month, day), ordered by the rule-12
-    // calendar key first so each day's entries come out already sorted —
-    // total order, never hash-dependent (§8 rule 12).
+    // Gather the anchored rows per (month, day), ordered by the shared
+    // calendar comparator (month/day cell, then specificity, year, and
+    // the rule-12 tie-breakers) so each day's entries come out already
+    // sorted — total order, never hash-dependent (plan §3.6).
     let mut cells: Vec<(u32, u32, EventRow)> = Vec::new();
     for row in event_core::rows(view) {
         if let (Some(month), Some(day)) = (row.anniversary_month, row.anniversary_day) {
             cells.push((month, day, row));
         }
     }
-    cells.sort_by(|a, b| {
-        a.1.cmp(&b.1)
-            .then_with(|| rule_12_calendar_key(&a.2).cmp(&rule_12_calendar_key(&b.2)))
-    });
+    cells.sort_by(|a, b| event_core::compare_calendar_rows(&a.2, &b.2));
 
     let months = (1..=12)
         .map(|month| {
@@ -158,17 +161,6 @@ pub fn build_pdf_document(view: &View, opts: &ReportOptions) -> PdfDocument {
         reference_year: opts.reference_year,
         months,
     }
-}
-
-/// The rule-12 calendar order key — (event type, subject, event id) —
-/// applied per day cell (plan §8 rule 12).
-fn rule_12_calendar_key(row: &EventRow) -> (String, String, Option<String>, Option<String>) {
-    (
-        row.event_type.clone(),
-        row.person_name.clone(),
-        row.event_id.clone(),
-        row.person_id.clone(),
-    )
 }
 
 impl PdfEntry {
@@ -662,6 +654,56 @@ mod tests {
         assert_eq!(order, vec!["Ada", "Zed", "Zed"]);
         assert_eq!(entries[1].event_type, "Birth");
         assert_eq!(entries[1].person_name, "Zed");
+    }
+
+    #[test]
+    fn day_cell_orders_month_only_before_day_one_then_by_year() {
+        // The anniversary calendar's shared (2, 1) cell — a month-only
+        // date (day 00, anchored on the 1st) colliding with a day-1
+        // date — must keep the event-core order in the PDF: month-only
+        // entries first (earliest year first), then day-1 entries
+        // (earliest year first). The inputs arrive deliberately shuffled
+        // so the builder's sort is what establishes the order.
+        let opts = ReportOptions::with_reference_year(2026);
+
+        let mut month_only_1950 =
+            calendar_row("Birth", "Ada", "E0001", (2, 1), Some(76), false, 2026);
+        month_only_1950.day = None;
+        month_only_1950.year = Some(1950);
+        let mut month_only_1990 =
+            calendar_row("Birth", "Bob", "E0002", (2, 1), Some(36), false, 2026);
+        month_only_1990.day = None;
+        month_only_1990.year = Some(1990);
+        let mut day_one_1960 =
+            calendar_row("Birth", "Carol", "E0003", (2, 1), Some(66), false, 2026);
+        day_one_1960.day = Some(1);
+        day_one_1960.year = Some(1960);
+        let mut day_one_1980 =
+            calendar_row("Birth", "Dave", "E0004", (2, 1), Some(46), false, 2026);
+        day_one_1980.day = Some(1);
+        day_one_1980.year = Some(1980);
+
+        let entries = vec![day_one_1980, month_only_1990, day_one_1960, month_only_1950];
+        let view = View::Calendar(CalendarView {
+            months: vec![CalendarMonth {
+                month: 2,
+                days: vec![CalendarDay { day: 1, entries }],
+            }],
+        });
+
+        let doc = build_pdf_document(&view, &opts);
+        // February is page/month index 1; the collision cell is day 1.
+        let february = &doc.months[1];
+        assert_eq!(february.days.len(), 1);
+        assert_eq!(february.days[0].day, 1);
+        let order: Vec<&str> = february.days[0]
+            .entries
+            .iter()
+            .map(|e| e.person_name.as_str())
+            .collect();
+        // Ada/Bob are the month-only rows (1950 → 1990), Carol/Dave the
+        // day-1 rows (1960 → 1980): specificity first, then year.
+        assert_eq!(order, vec!["Ada", "Bob", "Carol", "Dave"]);
     }
 
     #[test]
