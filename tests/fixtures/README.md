@@ -10,7 +10,7 @@ tests. All fixtures are **read-only inputs** — tests never write here.
 | `data.gramps` | The primary fixture: 5 people, 6 events, 3 families, 4 places — every section the v1 pipeline consumes. | A copy of the example file at `/home/tr/Documents/gramps_examples/data.gramps` (Gramps XML 1.7.1) |
 | `dates.gramps` | Every date form: `dateval` (before/after/about, quality, partial, BC, non-Gregorian), `daterange`, `datespan`, `datestr`. | Crafted by hand for this project |
 | `edge-cases.gramps` | Privacy flags, hostile-but-well-formed text (escaping regression), unknown elements/attributes/`future-*` sections, an unversioned header. | Crafted by hand for this project |
-| `families.gramps` | Family events (marriage/divorce), multi-role eventrefs, place hierarchy. | Crafted by hand for this project |
+| `families.gramps` | Family events (marriage/divorce), multi-role eventrefs, couple rows (collapse to one row with `person_id_2`), place hierarchy. | Crafted by hand for this project |
 
 ## Empty / error fixtures (added in the hardening milestone)
 

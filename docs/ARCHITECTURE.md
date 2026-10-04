@@ -40,19 +40,25 @@ gramps-dates ──▶ gramps-xml ──▶ event-core ──▶ writers
 | Crate | Responsibility | Depends on | Key types |
 | --- | --- | --- | --- |
 | `gramps-dates` | The Gramps date model: the four interchangeable date element forms (`dateval`/`daterange`/`datespan`/`datestr`), modifiers, quality, seven-calendar enum, display strings, Gregorian/Julian normalization via SDN, anniversary keys, leap-day fold semantics (D6). Civil-date math uses **jiff** (§6.2 of the plan). | — | `GrampsDate`, `Calendar`, `Modifier`, `Quality`, `NewYear`, `DateError` |
-| `gramps-xml` | `.gramps` container detection (plain XML / gzip / zip §3.1) and the XML → typed model mapping. The DTD is the spec; records carry `handle`s, not resolved links. Recoverable defects warn-and-skip into `Database::warnings`; hard errors (missing/duplicate handle, reversed range) abort with a named record/position. | `gramps-dates` | `Database`, `Event`, `Person`, `Family`, `Place`, `Header`, `Tag`, `GrampsXmlError` |
-| `event-core` | The engine: `handle → record` index (plus the inverse eventref index, §5 below), subject resolution with the precedence order, derived values, the `ReportOptions` filter pipeline, the four view builders, the flat `EventRow` writer contract and the `PdfDocument` document model. | `gramps-xml`, `gramps-dates` | `HandleIndex`, `ResolvedEvent`, `PersonDisplay`, `ReportOptions`, `LeapDayPolicy`, `View`, `ViewKind`, `ListView`, `CalendarView`, `TimelineView`, `CalendarWithYearsView`, `EventRow` |
-| `writers` | Output backends behind traits: `EventWriter` (csv / json / parquet) with the `Formats` bitflag; `PdfBackend` (typst) rendering `PdfDocument`. Every writer is atomic: render to a temp file in the destination dir, rename over the destination only on success. The typst renderer requires the `fonts` Cargo feature on `typst-assets` — a mandatory flag that embeds ~9 MB of font data into the binary; without it `typst_assets::fonts()` returns an empty iterator and PDF export compiles **valid but blank** documents (every glyph silently dropped). See D2 for the PDF-engine decision and the [fix plan](research/fix-blank-pdf-export.md) for the root cause, hardening and verification. | `event-core` | `EventWriter`, `CsvWriter`, `JsonWriter`, `ParquetWriter`, `Formats`, `PdfBackend`, `TypstPdf`, `PdfDocument`, `WriterError` |
-| `cli` | clap 4 derive surface: `inspect`, `list`, `report`, `serve`. One binary ships CLI + GUI (§6.5); `report` runs the full workflow with any `--format` combination. | `event-core`, `writers`, `web` | `Cli`, `Command`, `CommonFilters`, `ViewArg`, `FormatArg` |
+| `gramps-xml` | `.gramps` container detection (plain XML / gzip / zip §3.1) and the XML → typed model mapping. The DTD is the spec; records carry `handle`s, not resolved links. Recoverable defects warn-and-skip: a malformed date element records a structured [`DateIssue`] in `Database.date_issues` (plus a line in `Database::warnings`) and the event is omitted; other soft defects warn into `Database::warnings`. Hard errors (missing/duplicate handle) abort with a named record/position (§8). | `gramps-dates` | `Database`, `Event`, `Person`, `Family`, `Place`, `Header`, `Tag`, `DateIssue`, `GrampsXmlError` |
+| `event-core` | The engine: `handle → record` index (plus the inverse eventref index, §5 below), subject resolution with the precedence order, derived values, the `ReportOptions` filter pipeline, the four view builders (couple events collapse to one row, §5), the flat `EventRow` writer contract and the `PdfDocument` document model. | `gramps-xml`, `gramps-dates` | `HandleIndex`, `ResolvedEvent`, `PersonDisplay`, `ReportOptions`, `LeapDayPolicy`, `View`, `ViewKind`, `ListView`, `CalendarView`, `TimelineView`, `CalendarWithYearsView`, `EventRow`, `DateIssue` (re-exported from `gramps-xml`), `compare_calendar_rows` |
+| `writers` | Output backends behind traits: `EventWriter` (csv / json / parquet) with the `Formats` bitflag; `PdfBackend` (typst) rendering `PdfDocument`; `write_date_issues` serializing the malformed-date error report. Every writer is atomic: render to a temp file in the destination dir, rename over the destination only on success. The typst renderer requires the `fonts` Cargo feature on `typst-assets` — a mandatory flag that embeds ~9 MB of font data into the binary; without it `typst_assets::fonts()` returns an empty iterator and PDF export compiles **valid but blank** documents (every glyph silently dropped). See D2 for the PDF-engine decision and the [fix plan](research/fix-blank-pdf-export.md) for the root cause, hardening and verification. | `event-core` | `EventWriter`, `CsvWriter`, `JsonWriter`, `ParquetWriter`, `Formats`, `PdfBackend`, `TypstPdf`, `PdfDocument`, `WriterError`, `write_date_issues` |
+| `cli` | clap 4 derive surface: `inspect`, `list`, `report`, `serve`. One binary ships CLI + GUI (§6.5); `report` runs the full workflow with any `--format` combination and, when any event was skipped for a malformed date, writes `{prefix}.errors.json` (§8). | `event-core`, `writers`, `web` | `Cli`, `Command`, `CommonFilters`, `ViewArg`, `FormatArg` |
 | `web` | axum 0.8 server bound to **127.0.0.1** (D1): size-capped upload, options, view fragments, JSON dump and export routes; server-rendered UI with vendored htmx. | `event-core`, `writers` | `ServeConfig`, `AppState`, `router`, `handlers` |
 | `benchgen` | Deterministic generator (fixed-seed SplitMix64) for the ~100k-event benchmark fixture — no multi-MB XML is committed. Test-only. | — (output parses through `gramps-xml`) | `BenchOptions`, `generate` |
 
 ### Layering rules
 
 - `gramps-xml` and `gramps-dates` never see `event-core` types; `event-core`
-  never sees writer or HTTP types; `writers`/`web` consume only `EventRow`
-  and pre-built views/documents. This is what keeps the writers' flat
-  contract stable (a Parquet schema change is breaking, §7.3 of the plan).
+  never sees writer or HTTP types; `writers`/`web` consume only `EventRow`,
+  `DateIssue` and pre-built views/documents. This is what keeps the writers'
+  flat contract stable (a Parquet schema change is breaking, §7.3 of the
+  plan).
+- `DateIssue` is defined in `gramps-xml` and **re-exported by `event-core`**
+  (`pub use gramps_xml::DateIssue;`), so the error-report writer and the web
+  DTO consume it through the same single `event-core` edge as every other
+  output type — no `writers → gramps-xml` (or `web → gramps-xml`)
+  dependency is introduced.
 - The web UI renders the *same* view builders the CLI prints — there is one
   boundary between "transform" and "present", not two.
 
@@ -170,6 +176,14 @@ Ranges and spans keep both endpoints end-to-end: `event_date_stop` and
 `date_is_range` travel all the way to the flat rows, so the year-based views
 can render the full extent.
 
+A month-only date normalizes with day `0`, so a flat row keeps `day = None`
+(the anniversary anchor is still `(m, 1)` when the month is known, rule D10)
+while a real day-1 date has `day = Some(1)` — the anniversary calendar uses
+this distinction to list month-only entries before day-specific ones in the
+shared day-1 cell (§5). A date element that fails to parse never aborts
+the run: the event is omitted and a structured [`DateIssue`] records the
+reason (§8).
+
 ---
 
 ## 5. The anniversary contract (view semantics)
@@ -185,12 +199,19 @@ The report contract is plan §8 rules 1–15. The essentials, as implemented:
 - **Ranges/spans** (identical, D9): full range always shown; anniversary
   calendar anchors at range start; elapsed measured from start year.
 - **Feb 29** folds with the D6 label.
-- **Weddings**: family-owned events resolve to the couple ("A ⚭ B"), both
-  spouses are subjects; no divorce suppression (D5).
+- **Weddings / couple events**: family-owned events resolve to the couple —
+  both spouses are the subjects (no divorce suppression, D5) — and
+  `expand_rows` collapses them to **one** row per event (not one per
+  spouse): `person_name` joins the names with `" ⚭ "` (D-c), `person_id`
+  holds the first spouse and `person_id_2` the second (D-e), `null` for a
+  single-spouse family. Only family/couple events collapse (D-d);
+  person-referenced events keep one row per subject.
 - **Subject precedence** (a→e): Primary eventrefs on people → any eventref'd
   person → family couple/single spouse → orphan `"—"` (D7). One row per
-  (event, subject); `dedupe_same` additionally collapses identical
-  (type, subject, month-day) rows.
+  (event, subject) — except family/couple events, which collapse to one row
+  per event (above); `dedupe_same` additionally collapses identical
+  (type, subject, month-day) rows, keying couple rows on the combined
+  couple-handle pair.
 - **Privacy**: `priv="1"` excluded by default (§8.7), included+flagged with
   `--include-private`.
 - **Living-only** (§8 rule 15): a port of Gramps
@@ -198,23 +219,37 @@ The report contract is plan §8 rules 1–15. The essentials, as implemented:
   Cremation / Burial) mark dead; else birth known and
   `reference_year − birth_year ≥ 110` presumes death.
 - **Deterministic order** (rule 12): list/timeline by (start date, type,
-  subject, event id); anniversary calendar by (month, day, type, subject);
-  calendar-with-years by (start date, type, subject, id). Undated events
-  sort last, in a terminal "Undated" group in the timeline.
+  subject, event id); calendar-with-years by (start date, type, subject,
+  id). The anniversary calendar sorts by the shared
+  `event_core::compare_calendar_rows` comparator — (anchor month, anchor
+  day, specificity, year, type, subject, event id, person id) — so inside
+  the shared day-1 cell a month-only date (day `00`, anchored on the 1st)
+  comes before every day-specific date, and each specificity class lists
+  the earliest year first (requirements 3 & 4). The PDF backend sorts its
+  calendar cells with the same comparator, so the PDF entry order always
+  matches the CLI/UI calendar. Undated events sort last, in a terminal
+  "Undated" group in the timeline.
 
 ---
 
 ## 6. Output contracts
 
-`EventRow` is the immutable v1 flat-file contract shared by CSV / JSON /
-Parquet (plan §7.3): person id/name, event id/type, date ISO + display text,
-`event_date_stop`, `date_is_range`, year/month/day, anniversary month/day,
-`leap_day_folded`, place, role, age-at-event, reference year, elapsed,
-private. Serde-driven; `Option`s serialize as `null`.
+`EventRow` is the immutable **v2** flat-file contract shared by CSV / JSON /
+Parquet (plan §7.3): person id/name — `person_id` and `person_id_2` (the
+second spouse of a collapsed couple row, D-e) — event id/type, date ISO +
+display text, `event_date_stop`, `date_is_range`, year/month/day,
+anniversary month/day, `leap_day_folded`, place, role, age-at-event,
+reference year, elapsed, private. Serde-driven; `Option`s serialize as
+`null`.
 
 > Adding or reordering `EventRow` fields is a breaking schema change for
 > Parquet readers — evolution must bump a `schema_version` or ship a new
-> format.
+> format. The v2 contract (adding `person_id_2`) is stamped as file-level
+> `schema_version = 2` key-value metadata on every Parquet file (metadata
+> only — the row shape stays flat). CSV and JSON are field-name
+> self-describing, so they carry **no** version marker: the Parquet file
+> metadata is the versioned surface, while CSV/JSON readers rely on the
+> field names themselves.
 
 `PdfDocument` is a separate document model (title, reference year, calendar
 months → days → entries) built by event-core and rendered exclusively by the
@@ -240,7 +275,11 @@ wins), `--include-people`, `--date-range`, `--reference-year`,
 `--living-only`, `--include-private`, `--leap-day`.
 `--format all` expands to exactly csv, json, parquet, pdf; no `--format` is a
 clap error. `report` writes `{prefix}.{ext}` into `--out-dir` (created if
-absent), atomically.
+absent), atomically. When any event was skipped for a malformed date it also
+writes `{prefix}.errors.json` (D-a); `inspect`/`list`/`report` print one line
+per issue to stderr with ASCII control characters stripped, so a hostile
+file cannot inject terminal escape sequences — and the run still exits
+successfully because the selected output is produced (§8).
 
 ### Web (`gramps-events serve`)
 
@@ -271,12 +310,24 @@ the export button group all drive the same options object.
   `UnknownContainer { magic }` (a self-quoting, single-line byte `preview` of
   the input head, hex-escaped past 16 bytes), `GzipDecode`, `ZipDecode`,
   `ZipMissingMember { found }` (names the actual members), `InvalidUtf8`.
-- **XML structure errors are hard**: missing/duplicate handles and
-  `stop < start` ranges abort with the record type/position in the message.
+- **XML structure errors are hard**: missing/duplicate handles abort with
+  the record type/position in the message. Reversed
+  `daterange`/`datespan` endpoints are **not** hard errors: the date model
+  still rejects them (`DateError::RangeStartAfterStop`), but the XML layer
+  demotes the failure to a warn-and-skip issue (`GrampsXmlError::InvalidDate`
+  was removed with this change).
 - **Soft defects warn-and-skip**: `Database::warnings` lists each
-  occurrence; the CLI and web surface it rather than failing the file.
-  Empty input and garbage files each raise the named error; a well-formed
-  `<database>` with an empty body parses fine (the UI renders "0 events").
+  occurrence. Malformed date elements extend this to a structured
+  `Database.date_issues: Vec<DateIssue>` (event handle/id/type, the failing
+  date element tag and the `DateError` message, in document order): the
+  event is omitted from outputs, the message is printed to stderr (control
+  bytes stripped), `report` writes `{prefix}.errors.json` when file outputs
+  are requested, and the web load summary carries the same records as
+  `date_errors` and renders them in an error section (D-h). `warnings` stays
+  the human log; `date_issues` is the structured subset downstream
+  consumers read. Empty input and garbage files each raise the named error;
+  a well-formed `<database>` with an empty body parses fine (the UI renders
+  "0 events").
 - **Writers are atomic** (temp file + rename) so an aborted export never
   leaves a partial file at the final path.
 - **Performance proportionality**: `benchgen` + `bench_large.rs` assert the
@@ -288,10 +339,11 @@ the export button group all drive the same options object.
 
 ## 9. Testing strategy
 
-- **Unit + property tests per crate** (gramps-dates 54, gramps-xml 65,
-  event-core 57, writers 33 + roundtrip, cli 27, web 17 + 33 API integration,
-  benchgen 3) — golden parse tables, anchor rules, role precedence, dedup,
-  filter combinations, parquet round-trip, PDF magic/page-count.
+- **Unit + property tests per crate** (gramps-dates 54, gramps-xml 68,
+  event-core 64, writers 49 + roundtrip, cli 39, web 17 + 36 API
+  integration, benchgen 3) — golden parse tables, anchor rules, role
+  precedence, dedup, couple-row collapse, calendar ordering, filter
+  combinations, parquet round-trip, PDF magic/page-count.
 - **Committed fixtures** in `tests/fixtures/` (`data.gramps` example copy,
   `dates`, `edge-cases`, `families`, plus the hardening empty/error sweep) —
   see `tests/fixtures/README.md` for the table and DTD attribution.

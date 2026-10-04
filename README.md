@@ -88,7 +88,38 @@ gramps-events report family.gramps --format csv,json --exclude-types Death
 
 `--format all` expands to exactly `csv`, `json`, `parquet`, `pdf`; giving no
 `--format` is an error. Writes are atomic (temp file + rename), so an
-aborted run never leaves a partial file behind.
+aborted run never leaves a partial file behind. When any event is skipped
+because its date is malformed, the run still succeeds and prints one line
+per skipped event to stderr, and also writes `{prefix}.errors.json` next to
+the requested formats (see **Malformed dates** below).
+
+### Malformed dates
+
+A malformed date (reversed `daterange`/`datespan` endpoints, an invalid
+`dateval` value, …) **never aborts a run**:
+
+- the event is omitted from every output and view, and the run still exits
+  successfully;
+- `inspect`, `list` and `report` print one line per skipped event to
+  **stderr**, e.g.
+  `skipping event E0005: malformed daterange date (daterange/datespan stop "1914" sorts before start "1918")`
+  (ASCII control characters are stripped, so a hostile file cannot inject
+  terminal escape sequences);
+- a `report` run additionally writes `{prefix}.errors.json` — a
+  deterministic, atomic report of every skipped event (id, type, the date
+  element that failed and the message) — **only when** at least one event
+  was skipped, so clean trees produce exactly the requested format files;
+- the web UI lists the offending events and messages in a dedicated section
+  under the load summary.
+
+### Couples
+
+Family/couple events (marriage, divorce, …) render as **one** row listing
+both spouses: `person_name` joins the names with ` ⚭ ` (e.g.
+`Adam Uplands ⚭ Eve Uplands`) and the second spouse's Gramps id appears in
+the `person_id_2` column (`null` for single-person events and single-spouse
+families). Person-referenced events with two subjects still produce one row
+per subject.
 
 ### Filters (shared by `list` and `report`)
 
@@ -127,6 +158,9 @@ semantics (which dates anchor in the calendar view, how ranges behave,
 Feb 29 folding, elapsed-years rules) are specified in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the research plan
 [docs/research/gramps-events-architecture.md](docs/research/gramps-events-architecture.md).
+In the anniversary calendar, month-only dates (day `00`, anchored on the
+1st) are listed before day-specific dates, each group sorted by year —
+earliest year first.
 
 ## Output schema
 
@@ -134,18 +168,22 @@ All three row formats (CSV / JSON / Parquet) share one flat contract —
 `EventRow` — so a file is self-describing and stable across formats:
 
 ```text
-person_id, person_name, event_id, event_type, event_date, event_date_text,
-event_date_stop, date_is_range, year, month, day, anniversary_month,
-anniversary_day, leap_day_folded, place, role, age_at_event, reference_year,
-elapsed_years, private
+person_id, person_id_2, person_name, event_id, event_type, event_date,
+event_date_text, event_date_stop, date_is_range, year, month, day,
+anniversary_month, anniversary_day, leap_day_folded, place, role,
+age_at_event, reference_year, elapsed_years, private
 ```
 
 `event_date` is the normalized (Gregorian) ISO date or range start;
 `event_date_stop` carries range/span endpoints; `event_date_text` is the
 Gramps display string ("about 1900", "Nov 1822 – Apr 1823"); `reference_year`
-is constant per run so each file states the elapsed baseline. JSON emits
-`Option`s as `null`; Parquet has a fixed schema — adding or reordering fields
-later is a breaking change for Parquet readers.
+is constant per run so each file states the elapsed baseline. A collapsed
+couple row fills `person_id` / `person_id_2` with the spouses' ids and joins
+their names in `person_name`; `person_id_2` is `null` for single-person
+events. JSON emits `Option`s as `null`; Parquet has a fixed schema stamped
+with file-level `schema_version = 2` metadata — adding or reordering fields
+later is a breaking change for Parquet readers (CSV and JSON are field-name
+self-describing and carry no version marker).
 
 ## Project layout
 
@@ -172,8 +210,8 @@ module map, pipeline, design decisions D1–D12, view semantics, hardening
   multi-MB is committed) and `crates/cli/tests/bench_large.rs` asserts a
   time/memory budget over the whole `report` pipeline.
 - **Layering** is one-directional: `gramps-dates → gramps-xml → event-core →
-  writers / cli / web`. Writers only ever see the flat `EventRow` contract —
-  they never parse the XML model.
+  writers / cli / web`. Writers only ever see the flat `EventRow` contract
+  and event-core's re-exported `DateIssue` — they never parse the XML model.
 - The web UI renders the exact same view builders the CLI prints.
 
 ## Attribution
