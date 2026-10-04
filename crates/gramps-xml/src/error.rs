@@ -4,19 +4,19 @@ use std::io;
 
 use thiserror::Error;
 
-use gramps_dates::DateError;
-
 /// Every way parsing a `.gramps` file can fail.
 ///
 /// Container errors (`EmptyInput`, `UnknownContainer`, the gzip/zip decode
 /// failures) are raised before any XML work; `Xml`/`MissingRoot` cover
 /// malformed document structure; `MissingHandle`/`DuplicateHandle` are the
-/// parse-boundary handle-index validations (plan §7.1); `InvalidDate` is a
-/// *hard* date failure — a `daterange`/`datespan` whose stop sorts before
-/// its start. Softer record-level defects (a bad attribute value, a
-/// malformed but structurally valid date) are recoverable: the parser warns
-/// and skips that record so the rest of the file stays readable
-/// ([`Database::warnings`](crate::model::Database::warnings)).
+/// parse-boundary handle-index validations (plan §7.1). Record-level defects
+/// — a bad attribute value, a malformed date element — are recoverable: the
+/// parser warns and skips that record so the rest of the file stays
+/// readable, and each malformed-date skip is additionally captured
+/// structurally in
+/// [`Database::date_issues`](crate::model::Database::date_issues)
+/// ([`DateIssue`](crate::model::DateIssue)) alongside its human message in
+/// [`Database::warnings`](crate::model::Database::warnings).
 #[derive(Debug, Error)]
 pub enum GrampsXmlError {
     /// No bytes at all.
@@ -75,12 +75,6 @@ pub enum GrampsXmlError {
         first: &'static str,
         second: &'static str,
     },
-
-    /// A known date element failed hard validation. Per plan §7.1 only a
-    /// `daterange`/`datespan` with `stop < start` is a hard failure; every
-    /// other malformed date warns and skips the record instead.
-    #[error("invalid date on event {id}: {source}")]
-    InvalidDate { id: String, source: DateError },
 }
 
 #[cfg(test)]

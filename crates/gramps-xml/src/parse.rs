@@ -21,11 +21,16 @@
 //! - A record missing its `handle`, or two records sharing one, is a *hard*
 //!   error naming the record type/position — enforced via the
 //!   [`HandleIndex`] built while walking the document.
-//! - A `daterange`/`datespan` whose `stop` sorts before `start` is a *hard*
-//!   [`GrampsXmlError::InvalidDate`].
-//! - Any other malformed known field (bad `change` timestamp, malformed
-//!   date value) *warns and skips the record* so the rest of the file stays
-//!   readable; each occurrence is appended to [`Database::warnings`].
+//! - A malformed date element — a reversed `daterange`/`datespan`, an
+//!   invalid value/month/day/modifier/quality/calendar, an empty `datestr`
+//!   — *warns and skips the record* like any other recoverable defect, so
+//!   the rest of the file stays readable. Each occurrence is appended to
+//!   [`Database::warnings`] and recorded structurally in
+//!   [`Database::date_issues`] ([`DateIssue`])
+//!   for the error report and web UI.
+//! - Any other malformed known field (bad `change` timestamp, bad attribute
+//!   value) *warns and skips the record*; each occurrence is appended to
+//!   [`Database::warnings`].
 //!
 //! Namespace tolerance: the exporter writes a fixed namespace
 //! (`http://gramps-project.org/xml/1.7.x/`); matching uses the local tag
@@ -42,7 +47,8 @@ use roxmltree::Node;
 use crate::decode_container;
 use crate::error::GrampsXmlError;
 use crate::model::{
-    Database, Event, EventRef, Family, Gender, Header, Person, PersonName, Place, Surname, Tag,
+    Database, DateIssue, Event, EventRef, Family, Gender, Header, Person, PersonName, Place,
+    Surname, Tag,
 };
 
 /// Parse a `.gramps` file: detect the container, decode it, and map the
@@ -97,13 +103,20 @@ pub(crate) fn parse_document(xml: &str) -> Result<Database, GrampsXmlError> {
     let mut families = Vec::new();
     let mut places = Vec::new();
     let mut warnings = Vec::new();
+    let mut date_issues = Vec::new();
     let mut index = HandleIndex::default();
 
     for section in element_children(root) {
         match section.tag_name().name() {
             "header" => parse_header(section, &mut header),
             "tags" => parse_tags(section, &mut index, &mut warnings, &mut tags)?,
-            "events" => parse_events(section, &mut index, &mut warnings, &mut events)?,
+            "events" => parse_events(
+                section,
+                &mut index,
+                &mut warnings,
+                &mut date_issues,
+                &mut events,
+            )?,
             "people" => parse_people(section, &mut index, &mut warnings, &mut people)?,
             "families" => parse_families(section, &mut index, &mut warnings, &mut families)?,
             "places" => parse_places(section, &mut index, &mut warnings, &mut places)?,
@@ -121,6 +134,7 @@ pub(crate) fn parse_document(xml: &str) -> Result<Database, GrampsXmlError> {
         families,
         places,
         warnings,
+        date_issues,
     })
 }
 
@@ -246,10 +260,11 @@ fn parse_events(
     node: Node,
     index: &mut HandleIndex,
     warnings: &mut Vec<String>,
+    date_issues: &mut Vec<DateIssue>,
     out: &mut Vec<Event>,
 ) -> Result<(), GrampsXmlError> {
     for (position, record) in event_records(node).enumerate() {
-        match parse_event(record, index, warnings, position) {
+        match parse_event(record, index, warnings, date_issues, position) {
             Ok(Some(event)) => out.push(event),
             Ok(None) => {}
             Err(err) => return Err(err),
@@ -526,13 +541,20 @@ fn parse_places(
 /// Parse one `<event>` record.
 ///
 /// Returns `Ok(None)` when the record is skipped after a recoverable
-/// malformed field (warning appended), `Ok(Some(event))` on success, and a
-/// hard [`GrampsXmlError`] for handle violations and reversed range/span
-/// endpoints.
+/// malformed field (warning appended; a broken date element also records a
+/// [`DateIssue`] into `date_issues`), `Ok(Some(event))` on success, and a
+/// hard [`GrampsXmlError`] only for handle violations.
+///
+/// Date-element errors are **deferred**: the child loop keeps running after
+/// a broken date element so a `<type>` following it is still captured, and
+/// the event is skipped only once the loop finishes. When an event carries
+/// both a broken date and a malformed `change`, the date takes precedence:
+/// the event is skipped for the date with no second warning.
 fn parse_event(
     node: Node,
     index: &mut HandleIndex,
     warnings: &mut Vec<String>,
+    date_issues: &mut Vec<DateIssue>,
     position: usize,
 ) -> Result<Option<Event>, GrampsXmlError> {
     let handle = required_handle(node, "event", position)?;
@@ -549,6 +571,10 @@ fn parse_event(
         private: node.attribute("priv") == Some("1"),
         change: 0,
     };
+    // The first date element that failed to parse, if any. Filled with the
+    // event type after the child loop so a following `<type>` contributes;
+    // a second broken date element is ignored (only one is recorded).
+    let mut pending_date_issue: Option<DateIssue> = None;
 
     for child in element_children(node) {
         match child.tag_name().name() {
@@ -556,22 +582,22 @@ fn parse_event(
                 event.event_type = child.text().unwrap_or("").trim().to_string();
             }
             "dateval" | "daterange" | "datespan" | "datestr" => {
-                // The DTD allows exactly one date element; keep the first.
-                if event.date.is_some() {
+                // The DTD allows exactly one date element; keep the first
+                // (and once one has failed, the event is skipped anyway).
+                if event.date.is_some() || pending_date_issue.is_some() {
                     continue;
                 }
                 match parse_date_element(child) {
                     Ok(Some(date)) => event.date = Some(date),
                     Ok(None) => {}
                     Err(source) => {
-                        if matches!(source, DateError::RangeStartAfterStop(..)) {
-                            return Err(GrampsXmlError::InvalidDate { id, source });
-                        }
-                        warnings.push(format!(
-                            "skipping event {id}: malformed {} date ({source})",
-                            child.tag_name().name()
-                        ));
-                        return Ok(None);
+                        pending_date_issue = Some(DateIssue {
+                            event_handle: handle.to_string(),
+                            event_id: id.clone(),
+                            event_type: String::new(),
+                            date_kind: child.tag_name().name().to_string(),
+                            message: source.to_string(),
+                        });
                     }
                 }
             }
@@ -592,6 +618,19 @@ fn parse_event(
             // refs, objref, ...) are tolerated (forward compatibility).
             _ => {}
         }
+    }
+
+    // A broken date element defers the skip until here, so the event type
+    // read after it is captured; the date issue takes precedence over a
+    // malformed `change`, which would otherwise warn and skip too.
+    if let Some(mut issue) = pending_date_issue {
+        issue.event_type = event.event_type.clone();
+        warnings.push(format!(
+            "skipping event {id}: malformed {} date ({})",
+            issue.date_kind, issue.message
+        ));
+        date_issues.push(issue);
+        return Ok(None);
     }
 
     if let Some(change) = node.attribute("change") {
@@ -871,22 +910,47 @@ mod tests {
     }
 
     #[test]
-    fn reversed_range_is_a_hard_error_naming_the_event() {
-        let err = parse(
+    fn reversed_range_warns_and_skips_and_is_reported() {
+        let db = parse(
             r#"<database><events>
             <event handle="_e0" id="E0000">
               <daterange start="1918" stop="1914"/>
             </event>
+            <event handle="_e1" id="E0001">
+              <datespan start="2000-01-01" stop="1999-12-31"/>
+            </event>
+            <event handle="_e2" id="E0002"><dateval val="1950-01-15"/></event>
             </events></database>"#,
         )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            GrampsXmlError::InvalidDate { ref id, .. } if id == "E0000"
-        ));
-        let msg = err.to_string();
-        assert!(msg.contains("E0000"), "message: {msg}");
-        assert!(msg.contains("1914"), "message: {msg}");
+        .unwrap();
+        // Reversed endpoints are soft defects now: the damaged events are
+        // skipped, the well-formed one is kept, the parse succeeds, and each
+        // skip is both warned about and reported structurally.
+        assert_eq!(db.events.len(), 1);
+        assert_eq!(db.events[0].handle, "_e2");
+        assert_eq!(db.date_issues.len(), 2);
+        assert_eq!(db.date_issues[0].event_handle, "_e0");
+        assert_eq!(db.date_issues[0].event_id, "E0000");
+        assert_eq!(db.date_issues[0].date_kind, "daterange");
+        assert!(
+            db.date_issues[0].message.contains("1914"),
+            "message: {}",
+            db.date_issues[0].message
+        );
+        assert_eq!(db.date_issues[1].event_handle, "_e1");
+        assert_eq!(db.date_issues[1].event_id, "E0001");
+        assert_eq!(db.date_issues[1].date_kind, "datespan");
+        assert_eq!(db.warnings.len(), 2);
+        assert!(
+            db.warnings[0].contains("E0000"),
+            "warning: {}",
+            db.warnings[0]
+        );
+        assert!(
+            db.warnings[1].contains("E0001"),
+            "warning: {}",
+            db.warnings[1]
+        );
     }
 
     #[test]
@@ -911,6 +975,77 @@ mod tests {
             "warning: {}",
             db.warnings[0]
         );
+        assert_eq!(db.date_issues.len(), 1);
+        assert_eq!(db.date_issues[0].event_id, "E0000");
+        assert_eq!(db.date_issues[0].date_kind, "dateval");
+        assert!(
+            db.date_issues[0].message.contains("month 13"),
+            "message: {}",
+            db.date_issues[0].message
+        );
+    }
+
+    #[test]
+    fn mixed_reversed_range_and_invalid_value_are_all_reported() {
+        let db = parse(
+            r#"<database><events>
+            <event handle="_e0" id="E0000">
+              <daterange start="1918" stop="1914"/>
+            </event>
+            <event handle="_e1" id="E0001"><dateval val="1822-13"/></event>
+            <event handle="_e2" id="E0002"><dateval val="1900-01-01"/></event>
+            </events></database>"#,
+        )
+        .unwrap();
+        assert_eq!(db.events.len(), 1, "both damaged events must be skipped");
+        assert_eq!(db.events[0].handle, "_e2");
+        assert_eq!(db.warnings.len(), 2);
+        assert_eq!(db.date_issues.len(), 2);
+        assert_eq!(db.date_issues[0].event_id, "E0000");
+        assert_eq!(db.date_issues[0].date_kind, "daterange");
+        assert_eq!(db.date_issues[1].event_id, "E0001");
+        assert_eq!(db.date_issues[1].date_kind, "dateval");
+    }
+
+    #[test]
+    fn event_type_is_captured_when_type_follows_the_broken_date() {
+        let db = parse(
+            r#"<database><events>
+            <event handle="_e0" id="E0000">
+              <daterange start="1918" stop="1914"/>
+              <type>Death</type>
+            </event>
+            </events></database>"#,
+        )
+        .unwrap();
+        assert!(db.events.is_empty());
+        assert_eq!(db.date_issues.len(), 1);
+        assert_eq!(db.date_issues[0].event_id, "E0000");
+        assert_eq!(db.date_issues[0].event_type, "Death");
+    }
+
+    #[test]
+    fn date_issue_takes_precedence_over_malformed_change() {
+        let db = parse(
+            r#"<database><events>
+            <event handle="_e0" id="E0000" change="not-a-number">
+              <daterange start="1918" stop="1914"/>
+            </event>
+            </events></database>"#,
+        )
+        .unwrap();
+        // Skipped for the date only: one warning naming the date, one
+        // structured issue, and no second warning about the change.
+        assert!(db.events.is_empty());
+        assert_eq!(db.warnings.len(), 1);
+        assert!(
+            db.warnings[0].contains("date"),
+            "warning: {}",
+            db.warnings[0]
+        );
+        assert_eq!(db.date_issues.len(), 1);
+        assert_eq!(db.date_issues[0].event_id, "E0000");
+        assert_eq!(db.date_issues[0].date_kind, "daterange");
     }
 
     #[test]

@@ -31,7 +31,8 @@ pub mod parse;
 
 pub use error::GrampsXmlError;
 pub use model::{
-    Database, Event, EventRef, Family, Gender, Header, Person, PersonName, Place, Surname, Tag,
+    Database, DateIssue, Event, EventRef, Family, Gender, Header, Person, PersonName, Place,
+    Surname, Tag,
 };
 pub use parse::parse_database;
 

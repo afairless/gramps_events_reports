@@ -34,6 +34,37 @@ pub struct Database {
     /// the file stays readable, and each occurrence is recorded here (plan
     /// §7.1).
     pub warnings: Vec<String>,
+    /// Structured records of the events skipped for a malformed date
+    /// element, in document order (plan §7.1 as amended: reversed
+    /// `daterange`/`datespan` endpoints are no longer a hard error). Every
+    /// entry also has a human message in [`Database::warnings`]; the
+    /// structured form is what the error report and web UI consume.
+    pub date_issues: Vec<DateIssue>,
+}
+
+/// One event omitted because a date element failed to parse.
+///
+/// A malformed date element (`dateval`, `daterange`, `datespan` or
+/// `datestr`) never aborts the parse: the event is skipped, a human message
+/// is appended to [`Database::warnings`], and this structured record is
+/// pushed onto [`Database::date_issues`] so downstream consumers can render
+/// an error report without re-parsing warning strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DateIssue {
+    /// The `<event>` handle.
+    pub event_handle: String,
+    /// The Gramps id (`id="E0000"`); falls back to the handle when the
+    /// attribute is absent.
+    pub event_id: String,
+    /// The `<type>` text, when it had been read before the event was
+    /// skipped — empty when the file omits `<type>` entirely.
+    pub event_type: String,
+    /// The date element tag that failed: `dateval` | `daterange` |
+    /// `datespan` | `datestr`.
+    pub date_kind: String,
+    /// The [`gramps_dates::DateError`] display string, e.g.
+    /// `daterange/datespan stop "1914" sorts before start "1918"`.
+    pub message: String,
 }
 
 /// Contents of the `<header>` section: the `<created>` stamp and, when
@@ -228,5 +259,6 @@ mod tests {
         assert!(db.places.is_empty());
         assert_eq!(db.header, Header::default());
         assert!(db.warnings.is_empty());
+        assert!(db.date_issues.is_empty());
     }
 }
