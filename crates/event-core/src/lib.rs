@@ -63,7 +63,7 @@ pub use row::EventRow;
 pub use views::{
     CalendarDay, CalendarMonth, CalendarView, CalendarWithYearsDay, CalendarWithYearsMonth,
     CalendarWithYearsView, CalendarWithYearsYear, ListView, TimelineView, TimelineYear, View,
-    ViewKind, build_view, rows, view,
+    ViewKind, build_view, compare_calendar_rows, rows, view,
 };
 
 /// Canonical crate name — smoke tests (and later workspace integration

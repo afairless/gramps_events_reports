@@ -32,10 +32,14 @@
 //! Ordering follows the determinism contract (plan §8 rule 12): the list
 //! and the timeline sort by (start date, event type, primary subject,
 //! event id) with undated rows terminal (rule 13); calendar days follow
-//! (month, day) with entries sorted by (type, subject, event id); the
-//! calendar-with-years flattens by the same (start date, type, subject,
-//! id) key. Sorting never depends on set or hash iteration order.
+//! (month, day) with entries sorted by (specificity, year, event type,
+//! subject, event id, person id) — month-only dates (day `00`) before
+//! day-specific dates, each specificity class chronological (plan §3.6,
+//! requirements 3 & 4); the calendar-with-years flattens by the same
+//! (start date, type, subject, id) key. Sorting never depends on set or
+//! hash iteration order.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use crate::model::{PersonDisplay, ResolvedEvent};
@@ -258,8 +262,9 @@ pub fn view(events: &[ResolvedEvent], kind: ViewKind, opts: &ReportOptions) -> V
 ///
 /// The list and the timeline return their rows in rule-12 order (the
 /// timeline's group concatenation reproduces the ordered stream); the
-/// calendar returns its entries in calendar order — (month, day, event
-/// type, subject, event id); the calendar-with-years returns its rows in
+/// calendar returns its entries in calendar order — (month, day,
+/// specificity, year, event type, subject, event id, person id); the
+/// calendar-with-years returns its rows in
 /// the rule-12 (start date, type, subject, id) order — the same relative
 /// order the list gives its year-bearing rows (rule 12).
 pub fn rows(view: &View) -> Vec<EventRow> {
@@ -519,15 +524,19 @@ fn list_sort_key<'a>(row: &'a EventRow) -> ListSortKey<'a> {
 }
 
 /// Group anchored rows into the anniversary calendar's month → day tree,
-/// entries sorted by (event type, subject, event id) within a day (rule 12).
-/// Rows without an anchor (year-only dates, non-convertible calendars,
-/// undated events) are excluded per rule 1.
+/// entries sorted by (specificity, year, event type, subject, event id,
+/// person id) within a day (plan §3.6, requirements 3 & 4): a month-only
+/// date (day `00`, anchored on the 1st) comes before every day-specific
+/// date in the shared day-1 cell, and each specificity class sorts
+/// chronologically (earliest year first). Rows without an anchor
+/// (year-only dates, non-convertible calendars, undated events) are
+/// excluded per rule 1.
 fn build_calendar(rows: Vec<EventRow>) -> CalendarView {
     let mut anchored: Vec<EventRow> = rows
         .into_iter()
         .filter(|row| row.anniversary_month.is_some())
         .collect();
-    anchored.sort_by(|a, b| calendar_sort_key(a).cmp(&calendar_sort_key(b)));
+    anchored.sort_by(compare_calendar_rows);
     let mut months: Vec<CalendarMonth> = Vec::new();
     for row in anchored {
         let month = row.anniversary_month.expect("anchored rows have a month");
@@ -555,14 +564,44 @@ fn build_calendar(rows: Vec<EventRow>) -> CalendarView {
     CalendarView { months }
 }
 
-fn calendar_sort_key(row: &EventRow) -> (u32, u32, &str, &str, &str) {
+/// The anniversary-calendar order key — (anchor month, anchor day,
+/// specificity, year, event type, subject name, event id, person id) —
+/// as one comparable tuple (plan §3.6 / decision D-g); the trailing
+/// strings borrow from the compared row.
+type CalendarSortKey<'a> = (u32, u32, u8, i32, &'a str, &'a str, &'a str, &'a str);
+
+/// The key of one calendar row: the (month, day) anchor cell, then the
+/// specificity — `0` for a month-only date (`row.day` unknown) and `1`
+/// for a day-specific date — then the year (requirement 3: earliest year
+/// first within each class), then the rule-12 tie-breakers (event type,
+/// subject name, event id, person id) for equal dates.
+fn calendar_sort_key<'a>(row: &'a EventRow) -> CalendarSortKey<'a> {
     (
         row.anniversary_month.unwrap_or(0),
         row.anniversary_day.unwrap_or(0),
+        // Month-only dates (day 00, anchored on the 1st) sort before
+        // day-specific dates inside the shared (month, day=1) cell
+        // (requirement 4).
+        if row.day.is_none() { 0 } else { 1 },
+        row.year.unwrap_or(0),
         row.event_type.as_str(),
         row.person_name.as_str(),
         row.event_id.as_deref().unwrap_or(""),
+        row.person_id.as_deref().unwrap_or(""),
     )
+}
+
+/// Compare two rows by the anniversary-calendar order (plan §3.6,
+/// requirements 3 & 4): calendar cells ascend by (anchor month, anchor
+/// day); within a cell a month-only date (day `00`, anchored on the 1st)
+/// sorts before a day-specific date, and each specificity class sorts
+/// chronologically — the earliest year first — with the rule-12
+/// tie-breakers (event type, subject name, event id, person id) for
+/// equal dates. A public total order over `EventRow`s: [`build_calendar`]
+/// sorts by it, and the PDF backend consumes the same comparator so the
+/// CLI/UI anniversary calendar and the PDF entry order always agree.
+pub fn compare_calendar_rows(a: &EventRow, b: &EventRow) -> Ordering {
+    calendar_sort_key(a).cmp(&calendar_sort_key(b))
 }
 
 /// Build the timeline (plan §8 rules 10 and 13).
@@ -929,6 +968,128 @@ mod tests {
         assert_eq!(rows(&view(&events, ViewKind::Calendar, &opts)).len(), 6);
     }
 
+    /// A database whose February (month, day=1) cell holds both
+    /// month-only and day-specific entries across two years, plus a
+    /// day-2 cell and an April cell, to lock the requirement-4 order
+    /// (specificity first, then year). Each event carries a distinct type
+    /// so `dedupe_same` — keyed on (type, subject, effective month-day) —
+    /// never collapses a month-only and a day-1 entry of the same cell
+    /// into one row.
+    const CALENDAR_ORDER_XML: &[u8] = br#"<database>
+  <events>
+    <event handle="_o0" id="C0" change="1">
+      <type>Alpine</type>
+      <dateval val="1980-02"/>
+    </event>
+    <event handle="_o1" id="C1" change="1">
+      <type>Atoll</type>
+      <dateval val="1980-02-01"/>
+    </event>
+    <event handle="_o2" id="C2" change="1">
+      <type>Birth</type>
+      <dateval val="1970-02"/>
+    </event>
+    <event handle="_o3" id="C3" change="1">
+      <type>Boreal</type>
+      <dateval val="1970-02-01"/>
+    </event>
+    <event handle="_o4" id="C4" change="1">
+      <type>Coast</type>
+      <dateval val="1980-02-02"/>
+    </event>
+    <event handle="_o5" id="C5" change="1">
+      <type>Delta</type>
+      <dateval val="1970-04"/>
+    </event>
+    <event handle="_o6" id="C6" change="1">
+      <type>Epoch</type>
+      <dateval val="1970-04-01"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_op0" id="P0">
+      <name type="Birth Name">
+        <first>Ada</first>
+        <surname>Example</surname>
+      </name>
+      <eventref hlink="_o0" role="Primary"/>
+      <eventref hlink="_o1" role="Primary"/>
+      <eventref hlink="_o2" role="Primary"/>
+      <eventref hlink="_o3" role="Primary"/>
+      <eventref hlink="_o4" role="Primary"/>
+      <eventref hlink="_o5" role="Primary"/>
+      <eventref hlink="_o6" role="Primary"/>
+    </person>
+  </people>
+</database>"#;
+
+    #[test]
+    fn calendar_orders_month_only_before_day_one_then_by_year() {
+        let opts = run_opts();
+        let db = parse_database(CALENDAR_ORDER_XML).unwrap();
+        let events = collect_events(&db, &opts);
+        let View::Calendar(calendar) = view(&events, ViewKind::Calendar, &opts) else {
+            unreachable!("Calendar kind")
+        };
+        // Month tree: February has the day-1 and day-2 cells, April the
+        // day-1 cell — month-only Feb rows land on day 1, never merged
+        // into a different day cell.
+        assert_eq!(
+            calendar
+                .months
+                .iter()
+                .map(|month| (month.month, month.days.len()))
+                .collect::<Vec<_>>(),
+            vec![(2, 2), (4, 1)],
+        );
+        // The (2, 1) cell: month-only entries (day 00) first — 1970-02
+        // (C2) before 1980-02 (C0) — then the day-1 entries — 1970-02-01
+        // (C3) before 1980-02-01 (C1): specificity, then year.
+        let feb = &calendar.months[0];
+        assert_eq!(feb.days[0].day, 1);
+        assert_eq!(
+            feb.days[0]
+                .entries
+                .iter()
+                .map(|row| row.event_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["C2", "C0", "C3", "C1"],
+        );
+        assert_eq!(feb.days[1].day, 2);
+        assert_eq!(
+            feb.days[1]
+                .entries
+                .iter()
+                .map(|row| row.event_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["C4"],
+        );
+        // A non-February month shows the same class split.
+        assert_eq!(calendar.months[1].days[0].day, 1);
+        assert_eq!(
+            calendar.months[1].days[0]
+                .entries
+                .iter()
+                .map(|row| row.event_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["C5", "C6"],
+        );
+        // rows() flattens the tree back in the same deterministic order.
+        let order_rows = calendar_rows(CALENDAR_ORDER_XML, &opts);
+        let ids = order_rows
+            .iter()
+            .map(|row| row.event_id.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 7);
+        assert_eq!(ids[0], "C2");
+        assert_eq!(ids[1], "C0");
+        assert_eq!(ids[2], "C3");
+        assert_eq!(ids[3], "C1");
+        assert_eq!(ids[4], "C4");
+        assert_eq!(ids[5], "C5");
+        assert_eq!(ids[6], "C6");
+    }
+
     // --- golden: dates.gramps (anchor + range rules)
     // ----------------------------------------------------------------------
 
@@ -1048,10 +1209,17 @@ mod tests {
         ] {
             assert!(!ids.contains(&excluded), "{excluded} must not anchor");
         }
-        // Order: the anchor cells ascend (month, day), entries within a day
-        // follow (type, subject, id) — so on Nov 1 the Birth (D0007) sorts
-        // before the Marriage (D0018), and Nov 11 closes the calendar.
-        assert_eq!(ids[0], "D0003"); // Jan 1, before the same-day Marriage
+        // Order: the anchor cells ascend (month, day); entries within a
+        // day follow (specificity, year, type, subject, id) — the Jan 1
+        // cell opens with the earliest year (the 1801 Marriage D0020),
+        // then the 1900 Birth (D0003); the dual-dated Immigration (D0023)
+        // anchors on Jan 13 (Julian → Gregorian) right after; on Nov 1
+        // the two month-only 1822 entries keep their type tie-break —
+        // Birth (D0007) before the Marriage (D0018) — and Nov 11 closes
+        // the calendar.
+        assert_eq!(ids[0], "D0020"); // Jan 1: earliest year first
+        assert_eq!(ids[1], "D0003");
+        assert_eq!(ids[2], "D0023"); // Jan 13: the dual-dated span
         assert_eq!(ids[14], "D0007");
         assert_eq!(ids[15], "D0018");
         assert_eq!(ids[16], "D0004");
@@ -1872,6 +2040,68 @@ mod tests {
                     }
                 }
             }
+        }
+
+        /// The calendar comparator is a total order over the whole row
+        /// domain (anchored or not): reflexive (`a` ≤ `a`), antisymmetric
+        /// (equal exactly when the reversed comparison is equal; less-than
+        /// exactly the opposite of greater-than) and transitive (`a ≤ b ≤ c`
+        /// implies `a ≤ c`). A comparator with any contradiction or gap
+        /// would make a sort non-deterministic (plan §5 calendar ordering).
+        #[test]
+        fn calendar_comparator_is_a_total_order(
+            events in prop::collection::vec(gen_event(), 0..20)
+        ) {
+            let opts = run_opts();
+            let rows = rows(&build_view(&events, ViewKind::List, &opts));
+            for a in &rows {
+                prop_assert!(compare_calendar_rows(a, a).is_eq());
+                for b in &rows {
+                    let ab = compare_calendar_rows(a, b);
+                    let ba = compare_calendar_rows(b, a);
+                    prop_assert_eq!(ab.is_eq(), ba.is_eq());
+                    prop_assert_eq!(ab.is_lt(), ba.is_gt());
+                    prop_assert_eq!(ab.is_gt(), ba.is_lt());
+                }
+            }
+            for a in &rows {
+                for b in &rows {
+                    for c in &rows {
+                        if !compare_calendar_rows(a, b).is_gt()
+                            && !compare_calendar_rows(b, c).is_gt()
+                        {
+                            prop_assert!(!compare_calendar_rows(a, c).is_gt());
+                        }
+                    }
+                }
+            }
+        }
+
+        /// `build_calendar` agrees with sorting its rows by
+        /// [`compare_calendar_rows`]: the flattened calendar equals the
+        /// anchored rows in comparator order, and rebuilding it from a
+        /// reversed (shuffled) row stream yields the identical tree — the
+        /// view is deterministic under any arrival order (plan §5).
+        #[test]
+        fn calendar_matches_comparator_sort_under_shuffled_input(
+            events in prop::collection::vec(gen_event(), 0..20)
+        ) {
+            let opts = run_opts();
+            let expanded = expand_rows(&events, &opts);
+            let mut anchored = expanded
+                .iter()
+                .filter(|row| row.anniversary_month.is_some())
+                .cloned()
+                .collect::<Vec<_>>();
+            anchored.sort_by(compare_calendar_rows);
+
+            let forward = build_calendar(expanded.clone());
+            prop_assert_eq!(rows(&View::Calendar(forward)), anchored.clone());
+
+            let mut shuffled = expanded;
+            shuffled.reverse();
+            let backward = build_calendar(shuffled);
+            prop_assert_eq!(rows(&View::Calendar(backward)), anchored);
         }
     }
 
