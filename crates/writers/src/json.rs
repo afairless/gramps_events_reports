@@ -37,6 +37,7 @@ mod tests {
     fn row() -> EventRow {
         EventRow {
             person_id: Some("I0004".to_string()),
+            person_id_2: None,
             person_name: "Abraham Meowser".to_string(),
             event_id: Some("E0005".to_string()),
             event_type: "Death".to_string(),

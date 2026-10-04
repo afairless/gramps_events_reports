@@ -945,7 +945,7 @@ async fn export_streams_every_format_as_a_download() {
 
     let cases: &[ExportCase] = &[
         ("csv", "text/csv", &|b: &Bytes| {
-            b.starts_with(b"person_id,person_name")
+            b.starts_with(b"person_id,person_id_2,person_name")
         }),
         ("json", "application/json", &|b: &Bytes| b.starts_with(b"[")),
         ("parquet", "application/octet-stream", &|b: &Bytes| {

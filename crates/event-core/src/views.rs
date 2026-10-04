@@ -10,10 +10,11 @@
 //! **calendar-with-years** (§8 rule 11 / D12).
 //!
 //! ```text
-//!  ResolvedEvent stream ──▶ expand: one EventRow per (event, subject)
-//!                                (couples expand to one row per spouse,
-//!                                 plan §8.6; dedupe_same collapses
-//!                                 identical (type, subject, mm-dd) rows)
+//!  ResolvedEvent stream ──▶ expand: one EventRow per (event, subject);
+//!                                family/couple events collapse to one
+//!                                row per event (plan §3.4, D-d);
+//!                                dedupe_same collapses identical
+//!                                (type, subject, mm-dd) rows
 //!                                ┌──────────┬──────────┬───────────────┐
 //!                                ▼          ▼          ▼               ▼
 //!                          ListView  CalendarView  TimelineView  CalendarWithYearsView
@@ -194,10 +195,14 @@ pub struct CalendarWithYearsDay {
 
 /// Build one of the plan's views from a resolved, filtered event stream.
 ///
-/// Every event is expanded once per subject (one row per (event, subject),
-/// plan §8.6) into [`EventRow`]s stamped with the run's `opts`; the `List`
-/// kind sorts them (rule 12), the `Calendar` kind filters to anchored rows
-/// and groups them by their effective (month, day) cell (rules 1/3, D6).
+/// Every event is expanded into [`EventRow`]s stamped with the run's
+/// `opts`: one row per (event, subject), plan §8.6 — except
+/// family/couple events, which collapse to one row per event (plan §3.4,
+/// D-d). The `List` kind sorts them (rule 12), the `Calendar` kind filters
+/// to anchored rows and groups them by their effective (month, day) cell
+/// (rules 1/3, D6). The `ReportOptions` filters (privacy, types, people,
+/// dates, living-only) keep operating on the full resolved subjects, so
+/// `--include-people` matches either spouse before row expansion.
 pub fn build_view(events: &[ResolvedEvent], kind: ViewKind, opts: &ReportOptions) -> View {
     match kind {
         ViewKind::List => {
@@ -298,35 +303,123 @@ pub fn rows(view: &View) -> Vec<EventRow> {
 /// anniversary anchor) — the tuple the collapse hash keyed on.
 type DedupeKey = (String, String, Option<(u32, u32)>);
 
-/// Expand each event into one [`EventRow`] per subject, applying the
-/// `dedupe_same` collapse (plan §8.6): identical (event type, subject,
-/// effective anniversary month-day) rows collapse to their first
-/// occurrence. Orphan placeholders share the empty handle, so two orphan
-/// rows of the same type and month-day also collapse.
+/// Expand each event into one [`EventRow`] per subject — or, for a
+/// family/couple event, a single collapsed row per event (decision D-d) —
+/// applying the `dedupe_same` collapse (plan §8.6): identical (event
+/// type, subject, effective anniversary month-day) rows collapse to their
+/// first occurrence. Couple rows key on the combined spouse handles, so
+/// only identical couple events of the *same* pair collapse; orphan
+/// placeholders share the empty handle, so two orphan rows of the same
+/// type and month-day also collapse.
 fn expand_rows(events: &[ResolvedEvent], opts: &ReportOptions) -> Vec<EventRow> {
     let mut out = Vec::new();
     let mut seen: HashSet<DedupeKey> = HashSet::new();
     for event in events {
-        for subject in &event.subjects {
-            let row = event_row(event, subject, opts);
+        if event.couple {
+            // A family/couple event yields exactly one row no matter how
+            // many spouses resolve (plan §3.4); an unresolvable spouse set
+            // (no father/mother handle in the index) yields none.
+            if event.subjects.is_empty() {
+                continue;
+            }
+            let row = couple_row(event, opts);
             if opts.dedupe_same {
-                let anchor = match (row.anniversary_month, row.anniversary_day) {
-                    (Some(month), Some(day)) => Some((month, day)),
-                    _ => None,
-                };
-                if !seen.insert((event.event_type.clone(), subject.handle.clone(), anchor)) {
+                let handles = event
+                    .subjects
+                    .iter()
+                    .map(|subject| subject.handle.clone())
+                    .collect::<Vec<_>>()
+                    .join("|");
+                if !seen.insert((event.event_type.clone(), handles, row_anchor(&row))) {
                     continue;
                 }
             }
             out.push(row);
+        } else {
+            for subject in &event.subjects {
+                let row = event_row(event, subject, opts);
+                if opts.dedupe_same
+                    && !seen.insert((
+                        event.event_type.clone(),
+                        subject.handle.clone(),
+                        row_anchor(&row),
+                    ))
+                {
+                    continue;
+                }
+                out.push(row);
+            }
         }
     }
     out
 }
 
+/// The dedupe anchor of an expanded row — `(month, day)` when the row
+/// anchors in the anniversary calendar, else `None`.
+fn row_anchor(row: &EventRow) -> Option<(u32, u32)> {
+    match (row.anniversary_month, row.anniversary_day) {
+        (Some(month), Some(day)) => Some((month, day)),
+        _ => None,
+    }
+}
+
+/// The Unicode marriage symbol used to join couple row names (decision
+/// D-c): `" ⚭ "`, spaced so `A ⚭ B` reads as a single couple line.
+pub(crate) const COUPLE_JOIN: &str = " ⚭ ";
+
 /// Build one [`EventRow`] for `subject`'s view of `event`, stamped with
 /// the run's options (reference year, Feb 29 fold policy).
 fn event_row(event: &ResolvedEvent, subject: &PersonDisplay, opts: &ReportOptions) -> EventRow {
+    row_with_subject_fields(
+        event,
+        opts,
+        subject.gramps_id.clone(),
+        None,
+        subject.name.clone(),
+        subject.role.clone(),
+    )
+}
+
+/// Build the single [`EventRow`] of a family/couple event (decision D-d):
+/// one row per event whose `person_name` joins every subject's name with
+/// the marriage symbol (D-c), `person_id` the first spouse's id and
+/// `person_id_2` the second's — `None` for a single-spouse family.
+/// Additional subjects (an event referenced by several families) reach
+/// the contract only through the joined name; the two id columns cover
+/// the common two-spouse case.
+fn couple_row(event: &ResolvedEvent, opts: &ReportOptions) -> EventRow {
+    row_with_subject_fields(
+        event,
+        opts,
+        event
+            .subjects
+            .first()
+            .and_then(|subject| subject.gramps_id.clone()),
+        if event.subjects.len() > 1 {
+            event.subjects[1].gramps_id.clone()
+        } else {
+            None
+        },
+        event
+            .subjects
+            .iter()
+            .map(|subject| subject.name.clone())
+            .collect::<Vec<_>>()
+            .join(COUPLE_JOIN),
+        event.role.clone(),
+    )
+}
+
+/// Build an [`EventRow`] from the event's shared values plus one subject
+/// view (its ids, name and role), stamped with the run's options.
+fn row_with_subject_fields(
+    event: &ResolvedEvent,
+    opts: &ReportOptions,
+    person_id: Option<String>,
+    person_id_2: Option<String>,
+    person_name: String,
+    role: String,
+) -> EventRow {
     let (year, month, day) = date_components(event);
     let (anniversary_month, anniversary_day) = match event.anniversary {
         None => (None, None),
@@ -336,8 +429,9 @@ fn event_row(event: &ResolvedEvent, subject: &PersonDisplay, opts: &ReportOption
         }
     };
     EventRow {
-        person_id: subject.gramps_id.clone(),
-        person_name: subject.name.clone(),
+        person_id,
+        person_id_2,
+        person_name,
         event_id: event.event_id.clone(),
         event_type: event.event_type.clone(),
         event_date: event.gregorian.map(|date| date.to_string()),
@@ -363,7 +457,7 @@ fn event_row(event: &ResolvedEvent, subject: &PersonDisplay, opts: &ReportOption
         anniversary_day,
         leap_day_folded: event.leap_day_folded,
         place: event.place_path.as_ref().map(|path| path.join(" / ")),
-        role: subject.role.clone(),
+        role,
         age_at_event: event.age_at_event.map(format_age),
         reference_year: opts.reference_year,
         elapsed_years: event.elapsed_years,
@@ -743,12 +837,13 @@ mod tests {
         let rows = list_rows(DATA_GRAMPS, &opts);
         assert_eq!(rows.len(), 6);
 
-        // Abraham's death — the full 19-field contract, all fields set.
+        // Abraham's death — the full 21-field contract, all fields set.
         let death = &rows[5];
         assert_eq!(
             death,
             &EventRow {
                 person_id: Some("I0004".to_string()),
+                person_id_2: None,
                 person_name: "Abraham Meowser".to_string(),
                 event_id: Some("E0005".to_string()),
                 event_type: "Death".to_string(),
@@ -966,10 +1061,38 @@ mod tests {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn golden_families_couple_rows_expand_per_subject() {
+    fn couple_event_collapses_to_one_row_with_both_ids() {
         let opts = run_opts();
         let rows = list_rows(FAMILIES_GRAMPS, &opts);
-        assert_eq!(rows.len(), 12);
+        // The Marriage (E0000), Marriage-Alternative (E0001) and Divorce
+        // (E0002) all resolve through family (couple) eventrefs (D-d) and
+        // each collapses to exactly one row carrying both spouses (D-c).
+        for id in ["E0000", "E0001", "E0002"] {
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| fp(row).0.as_deref() == Some(id))
+                    .count(),
+                1,
+                "{id} yields one collapsed row, not one per spouse"
+            );
+        }
+        let marriage = rows
+            .iter()
+            .find(|row| fp(row).0.as_deref() == Some("E0000"))
+            .unwrap();
+        // Father-first subject order: Adam ⚭ Eve, ids in the same order.
+        assert_eq!(marriage.person_name, "Adam Uplands ⚭ Eve Uplands");
+        assert_eq!(marriage.person_id, Some("I0000".to_string()));
+        assert_eq!(marriage.person_id_2, Some("I0001".to_string()));
+        assert_eq!(marriage.role, "Family");
+        assert_eq!(marriage.elapsed_years, Some(71)); // 2026 − 1955
+    }
+
+    #[test]
+    fn golden_families_couple_rows_collapse_to_one_row_per_event() {
+        let opts = run_opts();
+        let rows = list_rows(FAMILIES_GRAMPS, &opts);
+        assert_eq!(rows.len(), 9);
         let fp_all = rows.iter().map(fp).collect::<Vec<_>>();
         let ids = fp_all
             .iter()
@@ -980,21 +1103,21 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "E0005", "E0006", "E0004", "E0000", "E0000", "E0001", "E0001", "E0002", "E0002",
-                "E0003", "E0003", "E0007",
+                "E0005", "E0006", "E0004", "E0000", "E0001", "E0002", "E0003", "E0003", "E0007",
             ]
         );
 
-        // Couples expand to one row per spouse with the couple's role
-        // (marriages stay visible despite the later divorce — D5).
+        // Couples collapse to one row per event with the couple's role
+        // (marriages stay visible despite the later divorce — D5); a
+        // single-person row carries no second id.
         let marriage = &fp_all[3];
         assert_eq!(marriage.0, Some("E0000".to_string()));
-        assert_eq!(marriage.1, "Adam Uplands");
+        assert_eq!(marriage.1, "Adam Uplands ⚭ Eve Uplands");
         assert_eq!(marriage.2, "Marriage");
-        let eve_row = &fp_all[4];
-        assert_eq!(eve_row.0, Some("E0000".to_string()));
-        assert_eq!(eve_row.1, "Eve Uplands");
-        assert_eq!(eve_row.2, "Marriage");
+        assert_eq!(fp_all[4].0, Some("E0001".to_string()));
+        assert_eq!(fp_all[4].1, "Adam Uplands ⚭ Eve Uplands");
+        assert_eq!(fp_all[5].0, Some("E0002".to_string()));
+        assert_eq!(fp_all[5].1, "Adam Uplands ⚭ Eve Uplands");
 
         // The orphan immigration carries the placeholder subject; the
         // text-only custom type is undated and terminal.
@@ -1007,6 +1130,103 @@ mod tests {
 
         // Rows carry the same reference year on every row.
         assert!(rows.iter().all(|row| row.reference_year == 2026));
+    }
+
+    /// A hand-written database exercising the couple-row edge cases the
+    /// committed fixtures do not: a single-spouse family (branch (d)) and
+    /// two identical couple events for the same pair (dedupe_same).
+    const COUPLE_EDGES_XML: &[u8] = br#"<database>
+  <events>
+    <event handle="_s0" id="S0" change="1">
+      <type>Marriage</type>
+      <dateval val="1985-06-01"/>
+    </event>
+    <event handle="_k0" id="K0" change="1">
+      <type>Marriage</type>
+      <dateval val="1990-05-05"/>
+    </event>
+    <event handle="_k1" id="K1" change="1">
+      <type>Marriage</type>
+      <dateval val="1990-05-05"/>
+    </event>
+  </events>
+  <people>
+    <person handle="_sp0" id="I0">
+      <name type="Birth Name">
+        <first>Solo</first>
+        <surname>Spouse</surname>
+      </name>
+    </person>
+    <person handle="_kp0" id="J0">
+      <name type="Birth Name">
+        <first>Jun</first>
+        <surname>One</surname>
+      </name>
+    </person>
+    <person handle="_kp1" id="J1">
+      <name type="Birth Name">
+        <first>No</first>
+        <surname>Two</surname>
+      </name>
+    </person>
+  </people>
+  <families>
+    <family handle="_sf0" id="F0">
+      <father hlink="_sp0"/>
+      <eventref hlink="_s0" role="Family"/>
+    </family>
+    <family handle="_kf0" id="F1">
+      <father hlink="_kp0"/>
+      <mother hlink="_kp1"/>
+      <eventref hlink="_k0" role="Family"/>
+      <eventref hlink="_k1" role="Family"/>
+    </family>
+  </families>
+</database>"#;
+
+    #[test]
+    fn single_spouse_family_keeps_one_row_with_null_second_id() {
+        let opts = run_opts();
+        let rows = list_rows(COUPLE_EDGES_XML, &opts);
+        // S0 is a family event whose mother handle is absent (branch d):
+        // still a couple event (one row), the single spouse's name and id,
+        // and a null second id.
+        assert_eq!(rows.len(), 3);
+        let solo = rows
+            .iter()
+            .find(|row| fp(row).0.as_deref() == Some("S0"))
+            .unwrap();
+        assert_eq!(solo.person_name, "Solo Spouse");
+        assert_eq!(solo.person_id, Some("I0".to_string()));
+        assert_eq!(solo.person_id_2, None);
+        assert_eq!(solo.role, "Family");
+    }
+
+    #[test]
+    fn dedupe_same_collapses_identical_couple_rows() {
+        let opts = run_opts();
+        // Two identical Marriage events of the same couple (same type,
+        // subjects, anchor) both remain by default...
+        assert_eq!(list_rows(COUPLE_EDGES_XML, &opts).len(), 3);
+
+        // ... and collapse to one under dedupe_same, keyed on the combined
+        // spouse handles (the first occurrence K0 survives).
+        let mut dedupe = run_opts();
+        dedupe.dedupe_same = true;
+        let rows = list_rows(COUPLE_EDGES_XML, &dedupe);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| fp(row).0 == Some("K0".to_string()))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| fp(row).0 == Some("K1".to_string()))
+                .count(),
+            0
+        );
+        assert!(list_rows(COUPLE_EDGES_XML, &opts).len() == 3);
     }
 
     // --- unit: the milestone deliverable rules (anchors + fold)
@@ -1064,9 +1284,9 @@ mod tests {
                 .position(|row| fp(row).0.as_deref() == Some(id))
                 .unwrap()
         };
-        // 10 events − 1 private = 9 resolved events, expanded to 10 rows
-        // (the couple V3 yields one row per spouse).
-        assert_eq!(rows.len(), 10);
+        // 10 events − 1 private = 9 resolved events, expanded to 9 rows
+        // (the couple V3 collapses to one row per event).
+        assert_eq!(rows.len(), 9);
 
         // Year-only, year-only range, text and undated events are in the
         // list but carry no anchor.
@@ -1120,18 +1340,19 @@ mod tests {
     }
 
     #[test]
-    fn couple_rows_start_from_family_role_and_split_by_subject() {
+    fn couple_rows_collapse_to_one_row_with_the_joined_names() {
         let opts = run_opts();
         let rows = list_rows(VIEWS_XML, &opts);
         let couple: Vec<&EventRow> = rows
             .iter()
             .filter(|row| fp(row).0 == Some("V3".to_string()))
             .collect();
-        assert_eq!(couple.len(), 2);
-        assert_eq!(couple[0].person_name, "Ada Dates");
-        assert_eq!(couple[1].person_name, "Zed Fold");
-        assert!(couple.iter().all(|row| row.role == "Family"));
-        assert!(couple.iter().all(|row| row.date_is_range));
+        assert_eq!(couple.len(), 1);
+        assert_eq!(couple[0].person_name, "Zed Fold ⚭ Ada Dates");
+        assert_eq!(couple[0].person_id, Some("P0".to_string()));
+        assert_eq!(couple[0].person_id_2, Some("P1".to_string()));
+        assert_eq!(couple[0].role, "Family");
+        assert!(couple[0].date_is_range);
         assert_eq!(couple[0].elapsed_years, Some(38)); // 2026 − 1988
     }
 
@@ -1139,7 +1360,7 @@ mod tests {
     fn dedupe_same_collapses_identical_type_subject_anchor_rows() {
         let mut opts = run_opts();
         let plain = list_rows(VIEWS_XML, &opts);
-        assert_eq!(plain.len(), 10);
+        assert_eq!(plain.len(), 9);
         // Ada's two identical Birth rows (V8, V9 — same type, subject,
         // month-day) both remain by default...
         assert_eq!(fp(&plain[0]).0, Some("V8".to_string()));
@@ -1148,7 +1369,7 @@ mod tests {
         // ... and collapse to one under dedupe_same.
         opts.dedupe_same = true;
         let deduped = list_rows(VIEWS_XML, &opts);
-        assert_eq!(deduped.len(), 9);
+        assert_eq!(deduped.len(), 8);
         assert_eq!(
             deduped
                 .iter()
@@ -1164,7 +1385,7 @@ mod tests {
             0
         );
         // Applying it twice is idempotent.
-        assert!(list_rows(VIEWS_XML, &opts).len() == 9);
+        assert!(list_rows(VIEWS_XML, &opts).len() == 8);
     }
 
     #[test]
@@ -1250,9 +1471,9 @@ mod tests {
         };
         // Equal start dates tie-break by (type, subject, id): V8 before V9.
         assert_eq!(ids(&timeline.years[0]), vec!["V8", "V9"]);
-        // The 1988–1989 couple range expands to both spouses with its full
+        // The 1988–1989 couple range collapses to one row with its full
         // extent intact.
-        assert_eq!(ids(&timeline.years[1]), vec!["V3", "V3"]);
+        assert_eq!(ids(&timeline.years[1]), vec!["V3"]);
         assert!(timeline.years[1].rows.iter().all(|row| row.date_is_range));
         assert!(timeline.years[1].rows.iter().all(|row| row.month.is_none()));
         // The orphan text and undated events close the timeline, sorted by
@@ -1371,14 +1592,14 @@ mod tests {
         assert_eq!(fp(v4).0, Some("V4".to_string()));
         assert!(v4.date_is_range);
         assert!(v4.event_date_text.contains("1998-05"));
-        // Year-only rows land in full_year: the 1988–1989 couple range and
-        // the 1990 birth.
+        // Year-only rows land in full_year: the 1988–1989 couple range
+        // (one collapsed row) and the 1990 birth.
         let year_1988 = calendar
             .years
             .iter()
             .find(|year| year.year == 1988)
             .unwrap();
-        assert_eq!(year_1988.full_year.len(), 2);
+        assert_eq!(year_1988.full_year.len(), 1);
         assert!(year_1988.full_year.iter().all(|row| row.month.is_none()));
         assert!(year_1988.full_year.iter().all(|row| row.date_is_range));
         let year_1990 = calendar
@@ -1508,9 +1729,9 @@ mod tests {
         // Timeline rows are the list rows; yrcal keeps only the
         // year-bearing ones; the anniversary calendar its anchored ones.
         let list = rows(&v_list);
-        assert_eq!(list.len(), 10);
+        assert_eq!(list.len(), 9);
         assert_eq!(rows(&v_tl), list);
-        assert_eq!(rows(&v_yrcal).len(), 8);
+        assert_eq!(rows(&v_yrcal).len(), 7);
         assert_eq!(rows(&v_cal).len(), 5);
     }
 

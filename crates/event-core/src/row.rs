@@ -2,8 +2,10 @@
 //!
 //! Every view builder produces [`EventRow`]s (plan §7.3): one row per
 //! (event, subject) — an event referenced by two people yields one row per
-//! person (plan §8.6) — carrying the person's id and display name, the
-//! event type and Gramps display-date string, the normalized Gregorian
+//! person (plan §8.6) — while family/couple events collapse to **one** row
+//! per event carrying both spouses' names and ids (plan §3.4, D-d). Each
+//! row carries the person's id and display name, the event type and Gramps
+//! display-date string, the normalized Gregorian
 //! dates (`event_date` start / `event_date_stop` range end), the
 //! anniversary anchor *after* the Feb 29 fold (decision D6), the place
 //! chain, the subject's role, the age at the event and the elapsed years
@@ -20,7 +22,9 @@
 use serde::{Deserialize, Serialize};
 
 /// One flat output row (plan §7.3): an event as seen by one of its
-/// subjects.
+/// subjects — or, for a family/couple event, one row per event grouping
+/// both spouses under `person_name` with `person_id` / `person_id_2`
+/// (decision D-d/D-e).
 ///
 /// `event_date` / `event_date_stop` are ISO strings of the *normalized*
 /// Gregorian start date (and range/span stop) — `None` where no
@@ -40,10 +44,16 @@ use serde::{Deserialize, Serialize};
 /// calendars, undated events) carry `None` in both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRow {
-    /// The subject's Gramps id (`id="I0000"`), when the exporter set one.
+    /// The subject's Gramps id (`id="I0000"`), when the exporter set one;
+    /// the first spouse's id on a collapsed couple row.
     pub person_id: Option<String>,
+    /// The second spouse's Gramps id on a collapsed couple row (decision
+    /// D-e); `None` for single-person events, single-spouse families and
+    /// any row with fewer than two subjects.
+    pub person_id_2: Option<String>,
     /// The subject's display name (`First Surname`), `"—"` for orphan
-    /// events, `""` for a nameless person.
+    /// events, `""` for a nameless person; both spouses' names joined
+    /// with `" ⚭ "` on a collapsed couple row (decision D-c).
     pub person_name: String,
     /// The event's Gramps id (`id="E0000"`), when the exporter set one.
     pub event_id: Option<String>,
@@ -114,6 +124,7 @@ mod tests {
     fn sample_row() -> EventRow {
         EventRow {
             person_id: Some("I0004".to_string()),
+            person_id_2: Some("I0009".to_string()),
             person_name: "Abraham Meowser".to_string(),
             event_id: Some("E0005".to_string()),
             event_type: "Death".to_string(),
@@ -143,6 +154,7 @@ mod tests {
         // Every contract field serializes under its documented name.
         let expected = json!({
             "person_id": "I0004",
+            "person_id_2": "I0009",
             "person_name": "Abraham Meowser",
             "event_id": "E0005",
             "event_type": "Death",
@@ -170,6 +182,7 @@ mod tests {
     fn nullability_serializes_as_json_null() {
         let mut row = sample_row();
         row.person_id = None;
+        row.person_id_2 = None;
         row.event_id = None;
         row.event_date = None;
         row.event_date_stop = None;
@@ -184,6 +197,7 @@ mod tests {
         let value: serde_json::Value = serde_json::to_value(&row).unwrap();
         for key in [
             "person_id",
+            "person_id_2",
             "event_id",
             "event_date",
             "event_date_stop",

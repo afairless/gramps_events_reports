@@ -564,6 +564,7 @@ mod tests {
     fn fragment_row_flags_are_deterministic() {
         let mut row = EventRow {
             person_id: Some("I0000".into()),
+            person_id_2: None,
             person_name: "A B".into(),
             event_id: Some("E0000".into()),
             event_type: "Birth".into(),
@@ -608,6 +609,7 @@ mod tests {
     fn fragment_row_maps_place_and_elapsed() {
         let row = EventRow {
             person_id: None,
+            person_id_2: None,
             person_name: "—".into(),
             event_id: None,
             event_type: "Birth".into(),
@@ -640,6 +642,7 @@ mod tests {
         // stretches from July to the group's end and notes the stop year.
         let cross = EventRow {
             person_id: None,
+            person_id_2: None,
             person_name: "—".into(),
             event_id: None,
             event_type: "Marriage".into(),
@@ -692,6 +695,7 @@ mod tests {
             event_date_text: "1822-00-00 - 1824-00-00".into(),
             ..EventRow {
                 person_id: None,
+                person_id_2: None,
                 person_name: "—".into(),
                 event_id: None,
                 event_type: "Marriage".into(),
@@ -724,6 +728,7 @@ mod tests {
     fn non_range_rows_are_plain_entries() {
         let mut row = EventRow {
             person_id: None,
+            person_id_2: None,
             person_name: "Ada Dates".into(),
             event_id: None,
             event_type: "Birth".into(),

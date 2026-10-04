@@ -1,5 +1,6 @@
 //! CSV row writer (plan §6.3): serde-driven records over the [`EventRow`]
-//! contract, one row per (event, subject).
+//! contract, one row per (event, subject) — family/couple events collapse
+//! to one row per event carrying both spouses (plan §3.4).
 
 use std::path::Path;
 
@@ -47,8 +48,9 @@ mod tests {
 
     /// The field names the milestone-8 golden test locks as the JSON/CSV
     /// schema — mirrored here so the header test stays readable.
-    const HEADER: [&str; 20] = [
+    const HEADER: [&str; 21] = [
         "person_id",
+        "person_id_2",
         "person_name",
         "event_id",
         "event_type",
@@ -73,6 +75,7 @@ mod tests {
     fn row(person_id: Option<&str>) -> EventRow {
         EventRow {
             person_id: person_id.map(str::to_string),
+            person_id_2: None,
             person_name: "Abraham Meowser".to_string(),
             event_id: Some("E0005".to_string()),
             event_type: "Death".to_string(),
@@ -128,6 +131,26 @@ mod tests {
         let mut reader = csv::Reader::from_path(&dest).unwrap();
         let parsed: Vec<EventRow> = reader.deserialize().collect::<Result<_, _>>().unwrap();
         assert_eq!(parsed, rows);
+    }
+
+    #[test]
+    fn couple_row_round_trips_person_id_2_value_or_empty() {
+        // A collapsed couple row serializes its second id as the
+        // `person_id_2` field; a single-person row serializes an empty
+        // field (the CSV convention for None).
+        let td = TempDir::new().unwrap();
+        let dest = td.path().join("events.csv");
+        let mut rows = vec![row(Some("I0000"))];
+        rows[0].person_name = "Adam Uplands ⚭ Eve Uplands".to_string();
+        rows[0].person_id_2 = Some("I0001".to_string());
+        rows.push(row(Some("I0004")));
+        CsvWriter.write(&rows, &dest).unwrap();
+
+        let mut reader = csv::Reader::from_path(&dest).unwrap();
+        let parsed: Vec<EventRow> = reader.deserialize().collect::<Result<_, _>>().unwrap();
+        assert_eq!(parsed, rows);
+        assert_eq!(parsed[0].person_id_2, Some("I0001".to_string()));
+        assert_eq!(parsed[1].person_id_2, None);
     }
 
     #[test]

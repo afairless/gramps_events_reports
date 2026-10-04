@@ -511,6 +511,7 @@ mod tests {
     ) -> EventRow {
         EventRow {
             person_id: Some("I0001".to_string()),
+            person_id_2: None,
             person_name: person_name.to_string(),
             event_id: Some(event_id.to_string()),
             event_type: event_type.to_string(),
@@ -906,6 +907,7 @@ mod tests {
         // never as markup or code.
         let row = EventRow {
             person_id: Some("I0001".to_string()),
+            person_id_2: None,
             person_name: "#[Alice \"Quoted\" *so*]".to_string(),
             event_id: Some("E0001".to_string()),
             event_type: "Birth $x$".to_string(),

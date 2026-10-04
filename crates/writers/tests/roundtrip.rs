@@ -23,6 +23,7 @@ use writers::{CsvWriter, EventWriter, JsonWriter, ParquetWriter};
 prop_compose! {
     fn event_row()(
         person_id in prop::option::of("[A-Za-z0-9]{1,8}"),
+        person_id_2 in prop::option::of("[A-Za-z0-9]{1,8}"),
         person_name in "[A-Za-z0-9 ]{0,24}",
         event_id in prop::option::of("[A-Za-z0-9]{1,8}"),
         event_type in "[A-Za-z]{1,16}",
@@ -45,6 +46,7 @@ prop_compose! {
     ) -> EventRow {
         EventRow {
             person_id,
+            person_id_2,
             person_name,
             event_id,
             event_type,
@@ -181,29 +183,31 @@ fn batches_to_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<EventRow
         };
 
         let person_id = opt_str(0);
-        let person_name = plain_str(1);
-        let event_id = opt_str(2);
-        let event_type = plain_str(3);
-        let event_date = opt_str(4);
-        let event_date_text = plain_str(5);
-        let event_date_stop = opt_str(6);
-        let date_is_range = plain_bool(7);
-        let year = opt_i32(8);
-        let month = opt_u32(9);
-        let day = opt_u32(10);
-        let anniversary_month = opt_u32(11);
-        let anniversary_day = opt_u32(12);
-        let leap_day_folded = plain_bool(13);
-        let place = opt_str(14);
-        let role = plain_str(15);
-        let age_at_event = opt_str(16);
-        let reference_year = plain_i32(17);
-        let elapsed_years = opt_i32(18);
-        let private = plain_bool(19);
+        let person_id_2 = opt_str(1);
+        let person_name = plain_str(2);
+        let event_id = opt_str(3);
+        let event_type = plain_str(4);
+        let event_date = opt_str(5);
+        let event_date_text = plain_str(6);
+        let event_date_stop = opt_str(7);
+        let date_is_range = plain_bool(8);
+        let year = opt_i32(9);
+        let month = opt_u32(10);
+        let day = opt_u32(11);
+        let anniversary_month = opt_u32(12);
+        let anniversary_day = opt_u32(13);
+        let leap_day_folded = plain_bool(14);
+        let place = opt_str(15);
+        let role = plain_str(16);
+        let age_at_event = opt_str(17);
+        let reference_year = plain_i32(18);
+        let elapsed_years = opt_i32(19);
+        let private = plain_bool(20);
 
         for i in 0..batch.num_rows() {
             rows.push(EventRow {
                 person_id: person_id[i].clone(),
+                person_id_2: person_id_2[i].clone(),
                 person_name: person_name[i].clone(),
                 event_id: event_id[i].clone(),
                 event_type: event_type[i].clone(),

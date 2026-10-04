@@ -280,7 +280,7 @@ mod tests {
         // CSV is a text file; JSON starts with '['; PDF starts with its
         // magic header; parquet starts with PAR1.
         let csv = std::fs::read_to_string(dir.path().join("r.csv")).unwrap();
-        assert!(csv.starts_with("person_id,person_name"));
+        assert!(csv.starts_with("person_id,person_id_2,person_name"));
         let json = std::fs::read_to_string(dir.path().join("r.json")).unwrap();
         assert!(json.trim_start().starts_with('['));
         let pdf = std::fs::read(dir.path().join("r.pdf")).unwrap();

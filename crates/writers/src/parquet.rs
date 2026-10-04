@@ -23,6 +23,7 @@ use crate::error::WriterError;
 fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("person_id", DataType::Utf8, true),
+        Field::new("person_id_2", DataType::Utf8, true),
         Field::new("person_name", DataType::Utf8, false),
         Field::new("event_id", DataType::Utf8, true),
         Field::new("event_type", DataType::Utf8, false),
@@ -52,6 +53,11 @@ fn record_batch(rows: &[EventRow]) -> Result<RecordBatch, WriterError> {
         Arc::new(StringArray::from(
             rows.iter()
                 .map(|r| r.person_id.as_deref())
+                .collect::<Vec<Option<&str>>>(),
+        )),
+        Arc::new(StringArray::from(
+            rows.iter()
+                .map(|r| r.person_id_2.as_deref())
                 .collect::<Vec<Option<&str>>>(),
         )),
         Arc::new(StringArray::from(
@@ -171,6 +177,7 @@ mod tests {
     fn row() -> EventRow {
         EventRow {
             person_id: Some("I0004".to_string()),
+            person_id_2: None,
             person_name: "Abraham Meowser".to_string(),
             event_id: Some("E0005".to_string()),
             event_type: "Death".to_string(),
@@ -235,13 +242,13 @@ mod tests {
         // Utf8 cell versus an empty but present string.
         let batch = &batches[0];
         let event_date = batch
-            .column(4)
+            .column(5)
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
         assert!(event_date.is_null(0), "None must read back as null");
         let place = batch
-            .column(14)
+            .column(15)
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
@@ -251,6 +258,31 @@ mod tests {
             "Some(\"\") must read back as present-empty"
         );
         assert!(!place.is_null(0));
+    }
+
+    #[test]
+    fn person_id_2_round_trips_preserved() {
+        // The couple-column (D-e) is part of the Parquet contract: a
+        // collapsed couple row's second id round-trips as the
+        // `person_id_2` cell, and a single-person row's absence stays null.
+        let td = TempDir::new().unwrap();
+        let dest = td.path().join("events.parquet");
+        let mut rows = vec![row()];
+        rows[0].person_name = "Adam Uplands ⚭ Eve Uplands".to_string();
+        rows[0].person_id_2 = Some("I0001".to_string());
+        rows.push(row());
+        ParquetWriter.write(&rows, &dest).unwrap();
+
+        let batches = read_batches(&dest);
+        let batch = &batches[0];
+        let ids = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(ids.value(0), "I0001");
+        assert!(ids.is_null(1), "absent second id must read back as null");
+        assert_eq!(batches, vec![record_batch(&rows).unwrap()]);
     }
 
     #[test]
@@ -265,6 +297,7 @@ mod tests {
             names,
             [
                 "person_id",
+                "person_id_2",
                 "person_name",
                 "event_id",
                 "event_type",
@@ -301,7 +334,7 @@ mod tests {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         assert_eq!(
             builder.schema().fields().len(),
-            20,
+            21,
             "schema present, no rows"
         );
         let batches: Vec<_> = builder.build().unwrap().collect::<Result<_, _>>().unwrap();
