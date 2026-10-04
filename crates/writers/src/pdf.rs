@@ -314,7 +314,14 @@ fn build_markup(doc: &PdfDocument) -> String {
         typst_string(&doc.title)
     ));
     out.push_str("#set page(paper: \"a4\", margin: (x: 1.75cm, y: 1.75cm), footer: context [Page #counter(page).display()])\n");
-    out.push_str("#set text(size: 10pt, font: \"Libertinus Serif\")\n\n");
+    // Explicit font fallback list (plan §3.5): Latin text shapes with
+    // Libertinus Serif; the marriage symbol (U+26AD) falls through to New
+    // Computer Modern — the family its `NewCM10` Regular face registers as
+    // — rather than relying on typst's implicit font-book fallback, so a
+    // glyph never silently degrades to a `.notdef` box.
+    out.push_str(
+        "#set text(size: 10pt, font: (\"Libertinus Serif\", \"New Computer Modern\"))\n\n",
+    );
 
     out.push_str(&format!("#let title = {}\n", typst_string(&doc.title)));
     out.push_str(&format!("#let year = {}\n\n", doc.reference_year));
@@ -712,9 +719,10 @@ mod tests {
             "the typst-assets `fonts` feature must load bundled fonts"
         );
 
-        // The generated markup sets `font: "Libertinus Serif"`, so the
-        // family must resolve from the book exactly as `TypstPdf` will
-        // look it up at layout.
+        // The generated markup sets `font: ("Libertinus Serif", "New
+        // Computer Modern")` — the primary plus the NewCM10 fallback —
+        // so both families must resolve from the book exactly as
+        // `TypstPdf` will look them up at layout.
         let book = FontBook::from_fonts(&world.fonts);
         assert!(
             book.contains_family("libertinus serif"),
@@ -731,6 +739,22 @@ mod tests {
             )
             .is_some(),
             "Libertinus Serif must resolve from the font book"
+        );
+        assert!(
+            book.contains_family("new computer modern"),
+            "New Computer Modern (NewCM10) must be registered in the font book"
+        );
+        assert!(
+            book.select(
+                "new computer modern",
+                FontVariant::new(
+                    FontStyle::default(),
+                    FontWeight::default(),
+                    FontStretch::default(),
+                ),
+            )
+            .is_some(),
+            "New Computer Modern (NewCM10) must resolve from the font book"
         );
     }
 
@@ -897,6 +921,117 @@ mod tests {
                 .any(|w| w.contains("unknown font family")),
             "warnings must expose the unknown font family diagnostic: {}",
             rendered.warnings.join(" · ")
+        );
+    }
+
+    #[test]
+    fn marriage_symbol_renders_with_newcm_fallback() {
+        // A couple row — "Adam Uplands ⚭ Eve Uplands" (decision D-c) —
+        // puts the marriage symbol (U+26AD) into the generated markup.
+        // It must compile into a PDF that keeps the twelve-page calendar
+        // shape and raises no missing-glyph diagnostic on the warnings
+        // seam (plan §5, PDF glyph).
+        let opts = ReportOptions::with_reference_year(2026);
+        let view = View::Calendar(CalendarView {
+            months: vec![CalendarMonth {
+                month: 1,
+                days: vec![CalendarDay {
+                    day: 14,
+                    entries: vec![calendar_row(
+                        "Marriage",
+                        "Adam Uplands ⚭ Eve Uplands",
+                        "E0001",
+                        (1, 14),
+                        Some(6),
+                        false,
+                        2026,
+                    )],
+                }],
+            }],
+        });
+        let doc = build_pdf_document(&view, &opts);
+        let rendered = TypstPdf
+            .compile(&doc)
+            .expect("typst must compile the couple report");
+
+        // PDF magic + the unchanged page count (one page per calendar
+        // month — the Gramps report shape).
+        assert!(
+            rendered.bytes.starts_with(b"%PDF-"),
+            "PDF magic header missing"
+        );
+        assert_eq!(rendered.pages, 12, "page count unchanged");
+
+        // Warning probe: no diagnostic naming a missing glyph / `.notdef`.
+        let warnings = rendered.warnings.join(" · ");
+        assert!(
+            rendered.warnings.iter().all(|w| {
+                let lowered = w.to_lowercase();
+                !lowered.contains("notdef") && !lowered.contains("missing glyph")
+            }),
+            "no missing-glyph diagnostic on the warnings seam: {warnings}"
+        );
+
+        // Content probe: the symbol survives into the laid-out content of
+        // page 1 (the title block shares January's page) — a text run
+        // carrying "⚭", never dropped or replaced by tofu.
+        let world = PdfWorld::new(build_markup(&doc)).expect("bundled fonts must load");
+        let warned = typst::compile::<PagedDocument>(&world);
+        let document = warned.output.expect("typst must compile the couple report");
+        let page_1_texts = frame_texts(&document.pages[0].frame);
+        assert!(
+            page_1_texts.iter().any(|t| t.contains('⚭')),
+            "the marriage symbol must be rendered on page 1: {}",
+            page_1_texts.join(" · ")
+        );
+
+        // Byte-level probe (plan §3.5): pinned typst 0.14.2 emits no
+        // missing-glyph warning, so the fallback is discriminated at the
+        // byte level — render the one-glyph document with and without the
+        // explicit fallback list. DejaVu Sans Mono is the probe primary
+        // because its cmap has no U+26AD (verified against the bundled
+        // book): with the list, the marriage symbol must fall through to
+        // New Computer Modern (the NewCM10 family) and land a real glyph
+        // run — the with-fallback content is non-empty — while both
+        // compiles keep their single page.
+        let primary_lacks_glyph =
+            "#set text(size: 10pt, font: \"DejaVu Sans Mono\")\n⚭".to_string();
+        let with_fallback =
+            "#set text(size: 10pt, font: (\"DejaVu Sans Mono\", \"New Computer Modern\"))\n⚭"
+                .to_string();
+
+        let implicit = TypstPdf::compile_markup(primary_lacks_glyph)
+            .expect("the one-glyph document without fallback must compile");
+        let explicit = TypstPdf::compile_markup(with_fallback.clone())
+            .expect("the one-glyph document with fallback must compile");
+
+        assert!(implicit.bytes.starts_with(b"%PDF-"));
+        assert!(explicit.bytes.starts_with(b"%PDF-"));
+        assert_eq!(implicit.pages, 1, "page count unchanged without fallback");
+        assert_eq!(explicit.pages, 1, "page count unchanged with fallback");
+        assert!(
+            explicit.bytes != implicit.bytes,
+            "the explicit NewCM10 fallback must change how the marriage glyph is shaped"
+        );
+
+        // …and the with-fallback content is non-empty: the marriage glyph
+        // is a real text run shaped with the fallback family.
+        let world = PdfWorld::new(with_fallback).expect("bundled fonts must load");
+        let warned = typst::compile::<PagedDocument>(&world);
+        let document = warned
+            .output
+            .expect("typst must compile the one-glyph document");
+        let mut fallback_fonts: Vec<String> = Vec::new();
+        for (_, item) in document.pages[0].frame.items() {
+            if let FrameItem::Text(text) = item
+                && text.text.contains('⚭')
+            {
+                fallback_fonts.push(text.font.info().family.to_string());
+            }
+        }
+        assert!(
+            fallback_fonts.iter().any(|f| f == "New Computer Modern"),
+            "the marriage glyph must be shaped with the NewCM10 fallback: {fallback_fonts:?}"
         );
     }
 
