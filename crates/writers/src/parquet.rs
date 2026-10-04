@@ -1,6 +1,8 @@
 //! Parquet row writer (plan §6.3): a fixed flat arrow-rs 60 schema
 //! mirroring the [`EventRow`] contract, written via `StructArray →
-//! RecordBatch → ArrowWriter`.
+//! RecordBatch → ArrowWriter`, stamped with a file-level
+//! `schema_version` key-value entry so readers can detect the flat
+//! contract generation.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,11 +11,30 @@ use arrow::array::{ArrayRef, BooleanArray, Int32Array, StringArray, UInt32Array}
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use event_core::EventRow;
-use parquet::arrow::arrow_writer::ArrowWriter;
+use parquet::arrow::arrow_writer::{ArrowWriter, ArrowWriterOptions};
+use parquet::file::metadata::KeyValue;
+use parquet::file::properties::WriterProperties;
 
 use crate::EventWriter;
 use crate::atomic::write_atomically;
 use crate::error::WriterError;
+
+/// The flat-contract generation stamped as Parquet file-level key-value
+/// metadata. `EventRow` v1 → `1`; v2 introduced `person_id_2` (couple
+/// rows), so the flat contract is now generation 2. Not a column — the
+/// row shape stays flat.
+const SCHEMA_VERSION: &str = "2";
+
+/// [`WriterProperties`] shared by every Parquet file this writer emits:
+/// file-level `schema_version` metadata only, otherwise defaults.
+fn writer_properties() -> WriterProperties {
+    WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![KeyValue::new(
+            "schema_version".to_string(),
+            Some(SCHEMA_VERSION.to_string()),
+        )]))
+        .build()
+}
 
 /// The fixed flat Parquet schema, in `EventRow` field order (the same
 /// names the JSON keys and CSV header use, locked by the milestone-8
@@ -146,9 +167,11 @@ fn record_batch(rows: &[EventRow]) -> Result<RecordBatch, WriterError> {
 }
 
 /// Writes [`EventRow`]s as one Parquet file (arrow-rs 60, single row
-/// group). `ArrowWriter::close` finalizes (and flushes) before the temp
-/// file is renamed over the destination. An empty row set writes a valid
-/// schema-only file with no row groups (readers see zero batches).
+/// group), with the file footer carrying `schema_version` key-value
+/// metadata (see [`SCHEMA_VERSION`]). `ArrowWriter::close` finalizes (and
+/// flushes) before the temp file is renamed over the destination. An
+/// empty row set writes a valid schema-only file with no row groups
+/// (readers see zero batches).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ParquetWriter;
 
@@ -156,7 +179,8 @@ impl EventWriter for ParquetWriter {
     fn write(&self, rows: &[EventRow], dest: &Path) -> Result<(), WriterError> {
         let batch = record_batch(rows)?;
         write_atomically(dest, |file| {
-            let mut writer = ArrowWriter::try_new(file, schema(), None)?;
+            let options = ArrowWriterOptions::new().with_properties(writer_properties());
+            let mut writer = ArrowWriter::try_new_with_options(file, schema(), options)?;
             writer.write(&batch)?;
             writer.close()?;
             Ok(())
@@ -322,6 +346,33 @@ mod tests {
     }
 
     #[test]
+    fn stamps_schema_version_2_file_metadata() {
+        // The flat contract moved to generation 2 with `person_id_2`, so
+        // every emitted file must carry `schema_version = 2` in its
+        // footer key-value metadata (plan §3.4) — a reader can detect the
+        // contract generation without inspecting column layout.
+        let td = TempDir::new().unwrap();
+        let dest = td.path().join("events.parquet");
+        ParquetWriter.write(&[row()], &dest).unwrap();
+
+        let file = File::open(&dest).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let kv = builder
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .expect("file-level key-value metadata present");
+        let schema_version = kv
+            .iter()
+            .find(|kv| kv.key == "schema_version")
+            .expect("schema_version key present")
+            .value
+            .as_deref()
+            .expect("schema_version has a value");
+        assert_eq!(schema_version, "2");
+    }
+
+    #[test]
     fn empty_rows_produce_a_valid_empty_file() {
         // ArrowWriter writes no row group for a zero-row batch, so readers
         // observe zero batches but the full contract schema: an empty
@@ -336,6 +387,21 @@ mod tests {
             builder.schema().fields().len(),
             21,
             "schema present, no rows"
+        );
+        // The schema_version footer entry is written on close even with
+        // no row groups, so an empty list still records the contract.
+        let kv = builder
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .expect("file-level key-value metadata present");
+        assert_eq!(
+            kv.iter()
+                .find(|kv| kv.key == "schema_version")
+                .expect("schema_version key present")
+                .value
+                .as_deref(),
+            Some("2")
         );
         let batches: Vec<_> = builder.build().unwrap().collect::<Result<_, _>>().unwrap();
         assert!(batches.is_empty(), "no row groups for zero rows");
