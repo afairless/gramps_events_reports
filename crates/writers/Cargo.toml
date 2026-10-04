@@ -10,6 +10,8 @@ event-core = { path = "../event-core" }
 # CSV backend (plan §6.3): serde-driven records with a field-name header row.
 csv = { workspace = true }
 # JSON backend: one compact array of EventRow objects, Options as null.
+# serde drives both the row writer and the error-report serializer.
+serde = { workspace = true }
 serde_json = { workspace = true }
 # Parquet backend: fixed flat schema → StructArray → RecordBatch → arrow
 # `ArrowWriter` (plan §6.3, arrow-rs 60). `parquet`'s default "arrow"

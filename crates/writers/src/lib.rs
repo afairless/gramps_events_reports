@@ -15,9 +15,15 @@
 //! own document model (title, reference year, calendar months),
 //! [`pdf::build_pdf_document`] builds it from an event-core view, and
 //! [`pdf::TypstPdf`] renders it behind the [`pdf::PdfBackend`] trait.
+//!
+//! [`error_report::write_date_issues`] serializes the malformed-date
+//! `DateIssue`s the CLI writes as `{prefix}.errors.json` — an object with
+//! an ordered `errors` array, atomic and deterministic, with no clock
+//! values.
 
 pub mod csv;
 pub mod error;
+pub mod error_report;
 pub mod json;
 pub mod parquet;
 pub mod pdf;
@@ -30,6 +36,7 @@ use std::path::Path;
 
 pub use csv::CsvWriter;
 pub use error::WriterError;
+pub use error_report::write_date_issues;
 pub use json::JsonWriter;
 pub use parquet::ParquetWriter;
 pub use pdf::{

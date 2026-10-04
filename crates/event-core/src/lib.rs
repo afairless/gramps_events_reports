@@ -51,6 +51,10 @@ pub mod resolve;
 pub mod row;
 pub mod views;
 
+// The structured malformed-date records are owned by `gramps-xml` but
+// re-exported here so `writers`/`web` keep consuming only event-core types
+// (no new crate edge, ARCHITECTURE §1 layering).
+pub use gramps_xml::DateIssue;
 pub use model::{PersonDisplay, ResolvedEvent};
 pub use options::{LeapDayPolicy, ReportOptions};
 pub use pipeline::{age_at_event, elapsed_years, probably_alive};

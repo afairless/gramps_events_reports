@@ -4436,6 +4436,7 @@ dependencies = [
  "event-core",
  "parquet",
  "proptest",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
