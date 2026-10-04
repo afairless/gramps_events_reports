@@ -71,6 +71,12 @@ pub struct ResolvedEvent {
     /// the subject is the `"—"` placeholder and `subjects` has exactly one
     /// entry.
     pub orphan: bool,
+    /// True when the event resolves through family (couple) eventrefs — a
+    /// `<family>` couple (branch (c)) or a family linking a single spouse
+    /// (branch (d)). Family/couple events render as one row per event with
+    /// both spouses' names (plan §3.4, D-d); person-referenced and orphan
+    /// events always have `couple == false`.
+    pub couple: bool,
     /// `reference_year − event_year` (plan §8.4), measured from the start
     /// year of the date (ranges/spans from their start, §8.2). `None` when
     /// the year is unknown (undated events, text dates, year 0). The value

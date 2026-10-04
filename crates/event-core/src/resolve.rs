@@ -184,6 +184,9 @@ struct Resolution {
     subjects: Vec<PersonDisplay>,
     role: String,
     orphan: bool,
+    /// True when the event resolved through family (couple) eventrefs —
+    /// a `<family>` couple (branch (c)) or a single-spouse family (d).
+    couple: bool,
 }
 
 /// Resolve one event to its subjects, place path and flags — the derived
@@ -202,6 +205,7 @@ fn resolve_event(event: &Event, index: &HandleIndex) -> ResolvedEvent {
         place_path: place_path(event, index),
         private: event.private,
         orphan: resolution.orphan,
+        couple: resolution.couple,
         elapsed_years: None,
         anniversary: None,
         leap_day_folded: false,
@@ -239,6 +243,7 @@ fn resolve_subjects(event: &Event, index: &HandleIndex) -> Resolution {
             ),
             role: PRIMARY_ROLE.to_string(),
             orphan: false,
+            couple: false,
         };
     }
     // (b) otherwise any eventref'd person. The inverse index lists people
@@ -261,6 +266,7 @@ fn resolve_subjects(event: &Event, index: &HandleIndex) -> Resolution {
             subjects,
             role,
             orphan: false,
+            couple: false,
         };
     }
     // (c) family events → the couple; a family linking a single spouse (d)
@@ -296,6 +302,7 @@ fn resolve_subjects(event: &Event, index: &HandleIndex) -> Resolution {
             subjects,
             role,
             orphan: false,
+            couple: true,
         };
     }
     // (e) orphan — no person or family references the event (plan D7).
@@ -308,6 +315,7 @@ fn resolve_subjects(event: &Event, index: &HandleIndex) -> Resolution {
         }],
         role: String::new(),
         orphan: true,
+        couple: false,
     }
 }
 
@@ -653,9 +661,18 @@ mod tests {
         assert_eq!(events[0].subjects[0].role, "Family");
         assert_eq!(events[0].subjects[1].role, "Family");
         assert_eq!(events[0].role, "Family");
+        assert!(events[0].couple);
+        assert!(events[1].couple);
+        assert!(events[2].couple);
         assert_eq!(events[2].event_type, "Divorce");
         assert_eq!(events[2].subjects.len(), 2);
         assert!(!events[0].orphan);
+
+        // Person-referenced events (a)/(b) and orphan events (e) are never
+        // couples — only family eventrefs mark an event as a couple.
+        for (index, event) in events.iter().enumerate().skip(3) {
+            assert!(!event.couple, "event {index} must not be a couple");
+        }
 
         // (a) one event, two Primary eventrefs → one subject per person.
         assert_eq!(events[3].subjects.len(), 2);
@@ -712,11 +729,13 @@ mod tests {
         assert_eq!(marriage.subjects[1].name, "Frigg Allmother");
         assert_eq!(marriage.subjects[0].role, "Family");
         assert_eq!(marriage.role, "Family");
+        assert!(marriage.couple);
 
         // (d) two families reference the same single-spouse event: the
-        // shared spouse appears exactly once.
+        // shared spouse appears exactly once, still a couple event.
         let death = &events[2];
         assert!(!death.orphan);
+        assert!(death.couple);
         assert_eq!(death.subjects.len(), 1);
         assert_eq!(death.subjects[0].name, "Odin Allfather");
         assert_eq!(death.subjects[0].role, "Family");
@@ -729,6 +748,7 @@ mod tests {
         // terminates instead of hanging.
         let burial = &events[3];
         assert!(!burial.orphan);
+        assert!(!burial.couple);
         assert_eq!(burial.subjects.len(), 1);
         assert_eq!(burial.subjects[0].name, "");
         assert_eq!(burial.place_path.as_ref().unwrap().join("/"), "Mobius/Loop");

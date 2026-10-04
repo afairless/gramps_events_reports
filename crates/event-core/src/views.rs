@@ -1720,6 +1720,7 @@ mod tests {
             place_path: None,
             private: false,
             orphan: false,
+            couple: false,
             elapsed_years: None,
             anniversary,
             leap_day_folded: false,
