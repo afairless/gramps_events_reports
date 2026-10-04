@@ -1869,6 +1869,76 @@ mod tests {
         assert!(d0019.event_date_text.contains("1824"));
     }
 
+    /// Locks decision D-f for the calendar-with-years grid: a month-only
+    /// date (day `00`) sorts before a day-specific date inside the same
+    /// (year, month, day=1) cell. The grid sorts its year-bearing rows by
+    /// the list key, whose date tuple reads the partial day as
+    /// `day.unwrap_or(0)`, so a month-only row lands on day 0 and thus
+    /// precedes the day-1 row in the shared cell, and years ascend across
+    /// the grid. Regression only — no production change, the assertions
+    /// pin the explicit cell order so a future sort change cannot
+    /// silently reorder the grid.
+    #[test]
+    fn calendar_with_years_orders_month_only_before_day_one() {
+        let opts = run_opts();
+        let db = parse_database(CALENDAR_ORDER_XML).unwrap();
+        let events = collect_events(&db, &opts);
+        let View::CalendarWithYears(calendar) = view(&events, ViewKind::CalendarWithYears, &opts)
+        else {
+            unreachable!("CalendarWithYears kind");
+        };
+        // The grid spans every year the fixture covers (rule 11) — 1970
+        // through 1980 inclusive.
+        assert_eq!(calendar.years.len(), 11);
+        assert_eq!(calendar.years.first().expect("grid").year, 1970);
+        assert_eq!(calendar.years.last().expect("grid").year, 1980);
+
+        // The (1970, 4, 1) cell: the month-only 1970-04 (C5) comes before
+        // the day-specific 1970-04-01 (C6) — and only those two rows.
+        let year_1970 = calendar.years.iter().find(|y| y.year == 1970).unwrap();
+        let april = year_1970.months.iter().find(|m| m.month == 4).unwrap();
+        assert_eq!(april.days.len(), 1);
+        assert_eq!(april.days[0].day, 1);
+        assert_eq!(row_ids(&april.days[0].entries), vec!["C5", "C6"]);
+        assert_eq!(april.days[0].entries[0].day, None);
+        assert_eq!(april.days[0].entries[1].day, Some(1));
+        // The (1970, 2, 1) cell: month-only 1970-02 (C2) before day-1
+        // 1970-02-01 (C3).
+        let feb_1970 = year_1970.months.iter().find(|m| m.month == 2).unwrap();
+        assert_eq!(feb_1970.days.len(), 1);
+        assert_eq!(feb_1970.days[0].day, 1);
+        assert_eq!(row_ids(&feb_1970.days[0].entries), vec!["C2", "C3"]);
+        assert_eq!(feb_1970.days[0].entries[0].day, None);
+        assert_eq!(feb_1970.days[0].entries[1].day, Some(1));
+        // The (1980, 2, 1) cell: month-only 1980-02 (C0) before day-1
+        // 1980-02-01 (C1), and the same day-0/day-1 split holds in a later
+        // grid year.
+        let year_1980 = calendar.years.iter().find(|y| y.year == 1980).unwrap();
+        let feb_1980 = year_1980.months.iter().find(|m| m.month == 2).unwrap();
+        assert_eq!(row_ids(&feb_1980.days[0].entries), vec!["C0", "C1"]);
+        assert_eq!(feb_1980.days[0].entries[0].day, None);
+        assert_eq!(feb_1980.days[0].entries[1].day, Some(1));
+        // Month-only never merges into a different day cell: the day-2
+        // cell holds only the 1980-02-02 row (C4).
+        assert_eq!(feb_1980.days.len(), 2);
+        assert_eq!(feb_1980.days[1].day, 2);
+        assert_eq!(row_ids(&feb_1980.days[1].entries), vec!["C4"]);
+        assert_eq!(feb_1980.days[1].entries[0].day, Some(2));
+    }
+
+    /// The event ids of a row slice, in order — test helper for
+    /// cell-order assertions.
+    fn row_ids(entries: &[EventRow]) -> Vec<&str> {
+        entries
+            .iter()
+            .map(|row| {
+                row.event_id
+                    .as_deref()
+                    .expect("fixture rows carry event ids")
+            })
+            .collect()
+    }
+
     #[test]
     fn view_kind_and_view_cover_all_four_views() {
         let opts = run_opts();
